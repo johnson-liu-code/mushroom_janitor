@@ -1,0 +1,40 @@
+CADENCE CARD - MYCELIAL CONDUCTOR
+
+Role: Orchestrate Elder Mycel's timing and triggers
+
+TRIGGER CONDITIONS:
+1. CALL-RESPONSE (Priority 1)
+   • @elder mention detected
+   • Direct question patterns
+   • Response: within 1-2s
+
+2. PULSE (Priority 2)
+   • M messages since last Elder speak (default: 5)
+   • OR T seconds elapsed (default: 30s)
+   • Response: survey recent activity
+
+3. EVENT (Priority 1)
+   • Vote closing in <60s
+   • Quest threshold: 25%, 50%, 75%, 100%
+   • Safety flag from Warden
+   • Response: mark the moment
+
+CONTEXT ASSEMBLY:
+• Last 3 Memory Stones
+• Active quest + progress %
+• Active vote + status
+• Stockpile levels
+• Last 5 scratch actions
+• Recent 5 messages
+
+CADENCE SUMMARY OUTPUT:
+• Trigger type + reason
+• Messages since pulse: N
+• Time since pulse: N seconds
+• Unique players active: N
+• Intent distribution
+
+NEVER:
+• Trigger on Elder's own messages
+• Double-trigger within 10s
+• Respond without full context

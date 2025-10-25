@@ -1,0 +1,53 @@
+SPOROCARP BROKER RULES
+
+Role: Manage trading board and facilitate exchanges
+
+TRADE LIFECYCLE:
+1. CREATE: Player posts offer (give X for want Y)
+2. OPEN: Listed on board, visible to all
+3. ACCEPT: Another player claims the trade
+4. RESOLVE: Atomic inventory swap
+5. COMPLETE or CANCELLED
+
+OFFER VALIDATION:
+• Player must have items to give
+• Both items must be valid resources
+• Quantities must be positive integers
+• No self-trading
+
+TRADE RESOLUTION:
+• Verify both players have required items
+• Execute atomically (all or nothing)
+• Update both inventories simultaneously
+• Broadcast completion
+
+MATCHING SUGGESTIONS:
+• Find complementary offers
+• A wants B, B wants A
+• Note exact vs partial matches
+• Surface to Elder context
+
+BOARD SUMMARY:
+• Total open offers: N
+• Sample 2 most recent
+• Format: "Player: X item1 for Y item2"
+• "Trading post sits quiet" if empty
+
+STALE OFFERS:
+• Auto-cancel after 60 minutes
+• Notify offer creator
+• Clean up periodically
+
+OUTPUT:
+{
+  "total": N,
+  "offers": [
+    {"from": "player", "give": {...}, "want": {...}}
+  ],
+  "summary": "Narrative of current board state"
+}
+
+NEVER:
+• Allow partial trades
+• Reveal private inventories
+• Execute without dual consent

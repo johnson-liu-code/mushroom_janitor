@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mushroom Village 🍄</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <h1>🍄 Mushroom Village</h1>
+      <div class="connection-status">
+        <span id="status-indicator" class="status-dot"></span>
+        <span id="status-text">Connecting...</span>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <!-- Chat Pane (Left Side) -->
+      <div class="chat-pane">
+        <div class="village-bell">
+          <div class="bell-item">
+            <span class="bell-label">Quest:</span>
+            <span id="bell-quest">Loading...</span>
+          </div>
+          <div class="bell-item">
+            <span class="bell-label">Vote:</span>
+            <span id="bell-vote">None</span>
+          </div>
+          <div class="bell-item">
+            <span class="bell-label">Action:</span>
+            <span id="bell-action">Explore the village</span>
+          </div>
+        </div>
+
+        <div id="chat-messages" class="chat-messages"></div>
+
+        <div class="chat-composer">
+          <div class="composer-hints">
+            Commands: <code>/gather moss</code> • <code>/donate moss x5</code> • <code>/vote option</code> • <code>/offer give moss x3 for cedar x1</code>
+          </div>
+          <div class="input-group">
+            <input 
+              type="text" 
+              id="message-input" 
+              placeholder="Type a message or command..." 
+              autocomplete="off"
+            >
+            <button id="send-button">Send</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Side Panels (Right Side) -->
+      <div class="side-panels">
+        <!-- Quest Panel -->
+        <div class="panel quest-panel">
+          <h3>🎯 Active Quest</h3>
+          <div id="quest-content">
+            <p class="panel-empty">No active quest</p>
+          </div>
+        </div>
+
+        <!-- Vote Panel -->
+        <div class="panel vote-panel">
+          <h3>🗳️ Active Vote</h3>
+          <div id="vote-content">
+            <p class="panel-empty">No active vote</p>
+          </div>
+        </div>
+
+        <!-- Stockpile Panel -->
+        <div class="panel stockpile-panel">
+          <h3>📦 Village Stockpile</h3>
+          <div id="stockpile-content">
+            <div class="resource-item">
+              <span class="resource-name">Moss:</span>
+              <span class="resource-qty" id="stock-moss">0</span>
+            </div>
+            <div class="resource-item">
+              <span class="resource-name">Cedar:</span>
+              <span class="resource-qty" id="stock-cedar">0</span>
+            </div>
+            <div class="resource-item">
+              <span class="resource-name">Resin:</span>
+              <span class="resource-qty" id="stock-resin">0</span>
+            </div>
+            <div class="resource-item">
+              <span class="resource-name">Spores:</span>
+              <span class="resource-qty" id="stock-spores">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Trades Panel -->
+        <div class="panel trades-panel">
+          <h3>🤝 Trading Board</h3>
+          <div id="trades-content">
+            <p class="panel-empty">No open trades</p>
+          </div>
+        </div>
+
+        <!-- Memory Stones Panel -->
+        <div class="panel stones-panel">
+          <h3>🪨 Memory Stones</h3>
+          <div id="stones-content">
+            <p class="panel-empty">Loading...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Registration Modal -->
+  <div id="registration-modal" class="modal">
+    <div class="modal-content">
+      <h2>Welcome to Mushroom Village</h2>
+      <p>What is your name, traveler?</p>
+      <input 
+        type="text" 
+        id="player-name-input" 
+        placeholder="Enter your name" 
+        maxlength="20"
+      >
+      <button id="register-button">Enter Village</button>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

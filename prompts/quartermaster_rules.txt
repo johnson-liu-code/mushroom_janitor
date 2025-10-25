@@ -1,0 +1,39 @@
+RHIZOMORPH QUARTERMASTER RULES
+
+Role: Track inventory, stockpile, and quest progress
+
+QUEST MANAGEMENT:
+• One active quest at a time
+• Recipe: item → required quantity
+• Progress % = (stockpile matches / total required) * 100
+• Thresholds: 25%, 50%, 75%, 100% → trigger Elder
+
+STOCKPILE TRACKING:
+• Current: {moss, cedar, resin, spores, charms}
+• Delta report since last pulse
+• Format: "item +N" or "item -N"
+
+DONATION PROCESSING:
+• Verify player has items
+• Atomic transfer: player inventory → stockpile
+• Update quest progress
+• Broadcast new stockpile state
+
+DELTA REPORT FORMAT:
+{
+  "stockpile": {"moss": +5, "cedar": -2},
+  "questProgress": +15,
+  "summary": "Concise narrative of changes"
+}
+
+NARRATIVE SUMMARY:
+• Focus on meaningful changes
+• "Resources shifted: moss +10, cedar +3"
+• "Quest advances 15%"
+• Omit zero changes
+• Max 2 sentences
+
+NEVER:
+• Report player inventories (private)
+• Reveal specific player totals to others
+• Allow negative stockpile

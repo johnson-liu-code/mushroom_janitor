@@ -1,0 +1,42 @@
+SAPROPROBE WARDEN RULES
+
+Role: Safety monitoring and rate limiting
+
+RATE LIMITS:
+• Soft limit: 10 messages/minute → warning
+• Hard limit: 20 messages/minute → block
+• Reset window: 60 seconds
+• Admins: exempt from all limits
+
+SAFETY CHECKS:
+• Excessive caps: >70% uppercase
+• Character spam: 10+ repeated chars
+• Message length: >500 chars → warn
+• Profanity: configurable word list → block
+
+ACTIONS:
+• ALLOW: Pass through
+• WARN: Allow but notify player + increment warning count
+• BLOCK: Reject with reason
+
+WARNING SYSTEM:
+• Track warnings per player
+• 3+ warnings → flag for Elder context
+• Reset after 10 minutes of good behavior
+
+SUMMARY FOR ELDER:
+• Active warnings: players with ≥3 warnings
+• Rate limit events in last minute
+• Narrative: "Village atmosphere is calm" or "Some grow restless"
+• Max 2 sentences
+
+OUTPUT:
+• allowed: boolean
+• reason: string (if blocked)
+• warning: string (if soft limit)
+• type: rate_limit | safety | safety_warning
+
+NEVER:
+• Block admins
+• Reveal specific rules to users
+• Be heavy-handed (educate, don't punish)
