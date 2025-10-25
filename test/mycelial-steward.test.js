@@ -331,6 +331,187 @@ describe('MycelialSteward - State Trimming', () => {
   });
 });
 
+describe('MycelialSteward - Letta Normalization Tests', () => {
+  
+  // Test 1: Exact Letta payload normalization
+  it('should normalize complete Letta response', () => {
+    const lettaResponse = {
+      cadence: {
+        mode: 'CALL_RESPONSE',
+        question: 'What should I do?'
+      },
+      vote: {
+        status: 'ACTIVE',
+        tally: { 'p1': 'North', 'p2': 'South' },
+        winner: 'North',
+        close_reason: 'quorum'
+      },
+      resources: {
+        needs: { moss: 5, cedar: 3 },
+        threshold_crossed: 50,
+        quest_percent_delta: 10
+      },
+      trades: {
+        resolutions: [
+          { status: 'COMPLETED', id: 'trade1', from: 'p1', to: 'p2' },
+          { status: 'FAILED', id: 'trade2', reason: 'insufficient_items' }
+        ],
+        cancel: ['trade3']
+      },
+      archive: {
+        promote: ['j1', 'j2'],
+        prune: ['s1'],
+        new_stones: [{ title: 'New Stone', text: 'A moment', tags: ['event'] }],
+        merge_pairs: []
+      },
+      safety: {
+        alerts: [{ playerId: 'p1', reason: 'spam' }],
+        notes: 'Player p1 needs attention'
+      }
+    };
+
+    const normalized = mycelialSteward.normalizeLettaPatch(lettaResponse);
+
+    // Cadence: mode present → should_elder_speak = true
+    assert.strictEqual(normalized.cadence.shouldElderSpeak, true);
+    assert.strictEqual(normalized.cadence.mode, 'CALL_RESPONSE');
+    assert.strictEqual(normalized.cadence.question, 'What should I do?');
+
+    // Vote: ACTIVE → OPEN
+    assert.strictEqual(normalized.vote.status, 'OPEN');
+    assert.strictEqual(normalized.vote.winner, 'North');
+    assert.strictEqual(normalized.vote.close_reason, 'quorum');
+
+    // Resources: needs object → array
+    assert.ok(Array.isArray(normalized.resources.needs));
+    assert.strictEqual(normalized.resources.needs.length, 2);
+    assert.ok(normalized.resources.needs.some(n => n.item === 'moss' && n.qty === 5));
+
+    // Resources: threshold number → boolean + crossed_at
+    assert.strictEqual(normalized.resources.threshold_crossed, true);
+    assert.strictEqual(normalized.resources.crossed_at, 50);
+
+    // Trades: COMPLETED → actions
+    assert.strictEqual(normalized.trades.actions.length, 1);
+    assert.strictEqual(normalized.trades.actions[0].type, 'RESOLVE');
+    assert.strictEqual(normalized.trades.actions[0].id, 'trade1');
+
+    // Archive: promote → promote_ids
+    assert.deepStrictEqual(normalized.archive.promote_ids, ['j1', 'j2']);
+    assert.deepStrictEqual(normalized.archive.prune_ids, ['s1']);
+
+    // Safety: alerts → flags
+    assert.strictEqual(normalized.safety.flags.length, 1);
+    assert.strictEqual(normalized.safety.notes_for_elder, 'Player p1 needs attention');
+  });
+
+  // Test 2: Trade failure → no actions, logged
+  it('should handle trade failures with no actions', () => {
+    const response = {
+      trades: {
+        resolutions: [
+          { status: 'FAILED', id: 'trade1', reason: 'player_offline' },
+          { status: 'FAILED', id: 'trade2', reason: 'insufficient_funds' }
+        ]
+      },
+      cadence: {},
+      vote: {},
+      resources: {},
+      archive: {},
+      safety: {}
+    };
+
+    const normalized = mycelialSteward.normalizeLettaPatch(response);
+
+    // No actions created for failed trades
+    assert.strictEqual(normalized.trades.actions.length, 0);
+  });
+
+  // Test 3: Threshold number → boolean + crossed_at
+  it('should convert threshold number to boolean with crossed_at', () => {
+    const response = {
+      resources: {
+        threshold_crossed: 75
+      },
+      cadence: {},
+      vote: {},
+      trades: {},
+      archive: {},
+      safety: {}
+    };
+
+    const normalized = mycelialSteward.normalizeLettaPatch(response);
+
+    assert.strictEqual(normalized.resources.threshold_crossed, true);
+    assert.strictEqual(normalized.resources.crossed_at, 75);
+  });
+
+  // Test 4: Threshold boolean true → with crossed_at
+  it('should handle threshold boolean true', () => {
+    const response = {
+      resources: {
+        threshold_crossed: true,
+        crossed_at: 1234567890
+      },
+      cadence: {},
+      vote: {},
+      trades: {},
+      archive: {},
+      safety: {}
+    };
+
+    const normalized = mycelialSteward.normalizeLettaPatch(response);
+
+    assert.strictEqual(normalized.resources.threshold_crossed, true);
+    assert.strictEqual(normalized.resources.crossed_at, 1234567890);
+  });
+
+  // Test 5: Threshold boolean false → no crossed_at
+  it('should handle threshold boolean false', () => {
+    const response = {
+      resources: {
+        threshold_crossed: false
+      },
+      cadence: {},
+      vote: {},
+      trades: {},
+      archive: {},
+      safety: {}
+    };
+
+    const normalized = mycelialSteward.normalizeLettaPatch(response);
+
+    assert.strictEqual(normalized.resources.threshold_crossed, false);
+    assert.strictEqual(normalized.resources.crossed_at, null);
+  });
+
+  // Test 6: Empty safety notes → null
+  it('should convert empty safety notes to null', () => {
+    const response = {
+      safety: {
+        notes: ''
+      },
+      cadence: {},
+      vote: {},
+      trades: {},
+      resources: {},
+      archive: {}
+    };
+
+    const normalized = mycelialSteward.normalizeLettaPatch(response);
+
+    assert.strictEqual(normalized.safety.notes_for_elder, null);
+  });
+
+  // Test 7: Fallback Elder message ends with "Next:"
+  it('should return fallback Elder message ending with Next:', () => {
+    const message = mycelialSteward.getFallbackElderMessage();
+    
+    assert.ok(message.includes('Next:'));
+    assert.ok(message.endsWith('Contribute one needed item.'));
+  });
+});
+
 describe('MycelialSteward - New Requirements Tests', () => {
   
   // Test 1: Starter payload assertions
@@ -435,43 +616,48 @@ describe('MycelialSteward - New Requirements Tests', () => {
     assert.ok('safety' in patch);
   });
 
-  // Test 6: Valid response with all keys
+  // Test 6: Valid response with all keys (new normalized structure)
   it('should validate and normalize complete response', () => {
     const validResponse = {
       trades: { resolve: ['offer1'], cancel: [] },
       vote: { close: true, decisionCard: { topic: 'test', winner: 'A' } },
       resources: { stockpileDeltas: { moss: 5 }, questPercentDelta: 10 },
-      archive: { promoteJournals: ['j1'], pruneStones: [], newStones: [] },
+      archive: { promote: ['j1'], prune: [], new_stones: [] },
       safety: { warnings: [], calmDown: [] },
       cadence: { shouldElderSpeak: true, triggerReason: 'test' }
     };
     
     const patch = mycelialSteward.validatePatchShape(validResponse);
     
-    // Should preserve all values
+    // Should preserve all values in normalized structure
     assert.deepStrictEqual(patch.trades.resolve, ['offer1']);
     assert.strictEqual(patch.vote.close, true);
     assert.strictEqual(patch.resources.questPercentDelta, 10);
-    assert.deepStrictEqual(patch.archive.promoteJournals, ['j1']);
+    assert.deepStrictEqual(patch.archive.promote_ids, ['j1']);
     assert.strictEqual(patch.cadence.shouldElderSpeak, true);
     assert.strictEqual(patch.cadence.triggerReason, 'test');
   });
 
-  // Test 7: getNoOpPatch returns safe defaults
+  // Test 7: getNoOpPatch returns safe defaults (new normalized structure)
   it('should return safe no-op patch', () => {
     const noOp = mycelialSteward.getNoOpPatch();
     
     assert.deepStrictEqual(noOp.trades.resolve, []);
     assert.deepStrictEqual(noOp.trades.cancel, []);
+    assert.deepStrictEqual(noOp.trades.actions, []);
     assert.strictEqual(noOp.vote.close, false);
     assert.strictEqual(noOp.vote.decisionCard, null);
     assert.deepStrictEqual(noOp.resources.stockpileDeltas, {});
     assert.strictEqual(noOp.resources.questPercentDelta, 0);
-    assert.deepStrictEqual(noOp.archive.promoteJournals, []);
-    assert.deepStrictEqual(noOp.archive.pruneStones, []);
-    assert.deepStrictEqual(noOp.archive.newStones, []);
+    assert.deepStrictEqual(noOp.resources.needs, []);
+    assert.deepStrictEqual(noOp.archive.promote_ids, []);
+    assert.deepStrictEqual(noOp.archive.prune_ids, []);
+    assert.deepStrictEqual(noOp.archive.new_stones, []);
+    assert.deepStrictEqual(noOp.archive.merge_pairs, []);
     assert.deepStrictEqual(noOp.safety.warnings, []);
     assert.deepStrictEqual(noOp.safety.calmDown, []);
+    assert.deepStrictEqual(noOp.safety.flags, []);
+    assert.strictEqual(noOp.safety.notes_for_elder, null);
     assert.strictEqual(noOp.cadence.shouldElderSpeak, false);
     assert.strictEqual(noOp.cadence.triggerReason, null);
   });

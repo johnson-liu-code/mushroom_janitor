@@ -168,9 +168,9 @@ Always return valid JSON matching the output schema.`;
   }
 
   /**
-   * Validate patch shape and return no-op if malformed
+   * Normalize Letta patch with exact transformation rules
    */
-  validatePatchShape(response) {
+  normalizeLettaPatch(response, serverContext = {}) {
     try {
       // Try to parse if string
       let parsed = response;
@@ -183,47 +183,108 @@ Always return valid JSON matching the output schema.`;
         parsed = JSON.parse(jsonMatch[0]);
       }
 
-      // Validate required keys
-      const requiredKeys = ['cadence', 'vote', 'resources', 'trades', 'archive', 'safety'];
-      const hasAllKeys = requiredKeys.every(key => key in parsed);
-      
-      if (!hasAllKeys) {
-        console.warn('[MycelialSteward] Missing required keys, using no-op patch');
-        return this.getNoOpPatch();
+      const normalized = {};
+
+      // 1. CADENCE: add should_elder_speak if mode present; pass through question
+      normalized.cadence = {
+        shouldElderSpeak: parsed.cadence?.mode ? true : Boolean(parsed.cadence?.should_elder_speak || parsed.cadence?.shouldElderSpeak),
+        triggerReason: parsed.cadence?.trigger_reason || parsed.cadence?.triggerReason || null,
+        mode: parsed.cadence?.mode || null,
+        question: serverContext.question || parsed.cadence?.question || null
+      };
+
+      // 2. VOTE: status "ACTIVE"→"OPEN"; ensure required fields
+      normalized.vote = {
+        status: parsed.vote?.status === 'ACTIVE' ? 'OPEN' : (parsed.vote?.status || null),
+        close: Boolean(parsed.vote?.close),
+        tally: parsed.vote?.tally || {},
+        winner: parsed.vote?.winner || null,
+        close_reason: parsed.vote?.close_reason || parsed.vote?.closeReason || null,
+        decisionCard: parsed.vote?.decisionCard || parsed.vote?.decision_card || null
+      };
+
+      // 3. RESOURCES: needs object → array; threshold_crossed number → {threshold_crossed:bool, crossed_at:N}
+      const needs = parsed.resources?.needs || {};
+      const needsArray = Array.isArray(needs) ? needs : 
+        Object.entries(needs).map(([item, qty]) => ({ item, qty }));
+
+      let thresholdInfo = { threshold_crossed: false, crossed_at: null };
+      const tc = parsed.resources?.threshold_crossed;
+      if (typeof tc === 'number') {
+        thresholdInfo = { threshold_crossed: true, crossed_at: tc };
+      } else if (tc === true) {
+        thresholdInfo = { threshold_crossed: true, crossed_at: parsed.resources?.crossed_at || Date.now() };
+      } else if (tc === false) {
+        thresholdInfo = { threshold_crossed: false, crossed_at: null };
       }
 
-      // Normalize with safe defaults
-      return {
-        trades: {
-          resolve: Array.isArray(parsed.trades?.resolve) ? parsed.trades.resolve : [],
-          cancel: Array.isArray(parsed.trades?.cancel) ? parsed.trades.cancel : []
-        },
-        vote: {
-          close: Boolean(parsed.vote?.close),
-          decisionCard: parsed.vote?.decisionCard || null
-        },
-        resources: {
-          stockpileDeltas: parsed.resources?.stockpileDeltas || {},
-          questPercentDelta: Number(parsed.resources?.questPercentDelta) || 0
-        },
-        archive: {
-          promoteJournals: Array.isArray(parsed.archive?.promoteJournals) ? parsed.archive.promoteJournals : [],
-          pruneStones: Array.isArray(parsed.archive?.pruneStones) ? parsed.archive.pruneStones : [],
-          newStones: Array.isArray(parsed.archive?.newStones) ? parsed.archive.newStones : []
-        },
-        safety: {
-          warnings: Array.isArray(parsed.safety?.warnings) ? parsed.safety.warnings : [],
-          calmDown: Array.isArray(parsed.safety?.calmDown) ? parsed.safety.calmDown : []
-        },
-        cadence: {
-          shouldElderSpeak: Boolean(parsed.cadence?.shouldElderSpeak),
-          triggerReason: parsed.cadence?.triggerReason || null
-        }
+      normalized.resources = {
+        needs: needsArray,
+        threshold_crossed: thresholdInfo.threshold_crossed,
+        crossed_at: thresholdInfo.crossed_at,
+        stockpileDeltas: parsed.resources?.stockpileDeltas || parsed.resources?.stockpile_deltas || {},
+        questPercentDelta: Number(parsed.resources?.questPercentDelta || parsed.resources?.quest_percent_delta || 0)
       };
+
+      // 4. TRADES: resolutions with status "COMPLETED" → actions; "FAILED" → empty + log
+      const resolutions = parsed.trades?.resolutions || [];
+      const actions = [];
+      
+      for (const res of resolutions) {
+        if (res.status === 'COMPLETED') {
+          actions.push({
+            type: 'RESOLVE',
+            id: res.id || res.offer_id,
+            from: res.from || res.fromPlayer,
+            to: res.to || res.toPlayer
+          });
+        } else if (res.status === 'FAILED') {
+          console.log(`[MycelialSteward] Trade ${res.id} failed: ${res.reason || 'unknown'}`);
+        }
+      }
+
+      normalized.trades = {
+        actions,
+        resolve: parsed.trades?.resolve || [],
+        cancel: Array.isArray(parsed.trades?.cancel) ? parsed.trades.cancel : []
+      };
+
+      // 5. ARCHIVE: promote → promote_ids + new_stones; prune → prune_ids; ensure merge_pairs
+      normalized.archive = {
+        promote_ids: Array.isArray(parsed.archive?.promote) ? parsed.archive.promote : 
+                     (Array.isArray(parsed.archive?.promote_ids) ? parsed.archive.promote_ids : 
+                      (Array.isArray(parsed.archive?.promoteJournals) ? parsed.archive.promoteJournals : [])),
+        prune_ids: Array.isArray(parsed.archive?.prune) ? parsed.archive.prune :
+                   (Array.isArray(parsed.archive?.prune_ids) ? parsed.archive.prune_ids :
+                    (Array.isArray(parsed.archive?.pruneStones) ? parsed.archive.pruneStones : [])),
+        new_stones: Array.isArray(parsed.archive?.new_stones) ? parsed.archive.new_stones :
+                    (Array.isArray(parsed.archive?.newStones) ? parsed.archive.newStones : []),
+        merge_pairs: Array.isArray(parsed.archive?.merge_pairs) ? parsed.archive.merge_pairs : []
+      };
+
+      // 6. SAFETY: alerts→flags; notes→notes_for_elder (empty string→null)
+      normalized.safety = {
+        flags: Array.isArray(parsed.safety?.alerts) ? parsed.safety.alerts :
+               (Array.isArray(parsed.safety?.flags) ? parsed.safety.flags :
+                (Array.isArray(parsed.safety?.warnings) ? parsed.safety.warnings : [])),
+        notes_for_elder: (parsed.safety?.notes || parsed.safety?.notes_for_elder || '') === '' ? 
+                         null : (parsed.safety?.notes || parsed.safety?.notes_for_elder || null),
+        warnings: Array.isArray(parsed.safety?.warnings) ? parsed.safety.warnings : [],
+        calmDown: Array.isArray(parsed.safety?.calmDown) ? parsed.safety.calmDown : []
+      };
+
+      return normalized;
     } catch (error) {
-      console.error('[MycelialSteward] Failed to validate patch shape:', error.message);
+      console.error('[MycelialSteward] Normalization error:', error.message);
       return this.getNoOpPatch();
     }
+  }
+
+  /**
+   * Validate patch shape and return no-op if malformed (legacy method)
+   */
+  validatePatchShape(response, serverContext) {
+    return this.normalizeLettaPatch(response, serverContext);
   }
 
   /**
@@ -231,13 +292,93 @@ Always return valid JSON matching the output schema.`;
    */
   getNoOpPatch() {
     return {
-      trades: { resolve: [], cancel: [] },
-      vote: { close: false, decisionCard: null },
-      resources: { stockpileDeltas: {}, questPercentDelta: 0 },
-      archive: { promoteJournals: [], pruneStones: [], newStones: [] },
-      safety: { warnings: [], calmDown: [] },
-      cadence: { shouldElderSpeak: false, triggerReason: null }
+      trades: { actions: [], resolve: [], cancel: [] },
+      vote: { status: null, close: false, tally: {}, winner: null, close_reason: null, decisionCard: null },
+      resources: { needs: [], threshold_crossed: false, crossed_at: null, stockpileDeltas: {}, questPercentDelta: 0 },
+      archive: { promote_ids: [], prune_ids: [], new_stones: [], merge_pairs: [] },
+      safety: { flags: [], notes_for_elder: null, warnings: [], calmDown: [] },
+      cadence: { shouldElderSpeak: false, triggerReason: null, mode: null, question: null }
     };
+  }
+
+  /**
+   * Build Elder input bundle for Janitor API
+   */
+  buildElderInputBundle(gameState, patch, recentMessages = []) {
+    // Canon stones (≤12)
+    const canon_stones = gameState.getMemoryStones().slice(0, 12);
+
+    // Now ring
+    const quest = gameState.nowRing.activeQuest;
+    const vote = gameState.nowRing.activeVote;
+    
+    const now = {
+      quest: quest ? {
+        name: quest.name,
+        percent: quest.percent || 0,
+        needs: patch.resources.needs
+      } : null,
+      vote: vote ? {
+        topic: vote.topic,
+        options: vote.options,
+        leading: this._getLeadingVoteOption(vote)
+      } : null,
+      stockpile: gameState.stockpile
+    };
+
+    // Top recent actions (≤5)
+    const top_recent_actions = gameState.nowRing.topRecentActions.slice(0, 5);
+
+    // Last messages summary (≤8)
+    const last_messages_summary = recentMessages.slice(-8).map(m => ({
+      player: m.playerName || m.from,
+      text: m.text,
+      timestamp: m.timestamp
+    }));
+
+    // Safety notes
+    const safety_notes = patch.safety.notes_for_elder;
+
+    // Question if CALL_RESPONSE
+    const question = patch.cadence.mode === 'CALL_RESPONSE' ? patch.cadence.question : null;
+
+    return {
+      canon_stones,
+      now,
+      top_recent_actions,
+      last_messages_summary,
+      safety_notes,
+      question
+    };
+  }
+
+  /**
+   * Get leading vote option
+   */
+  _getLeadingVoteOption(vote) {
+    if (!vote || !vote.tally || Object.keys(vote.tally).length === 0) {
+      return null;
+    }
+
+    const counts = {};
+    vote.options.forEach(opt => counts[opt] = 0);
+    Object.values(vote.tally).forEach(opt => {
+      if (counts.hasOwnProperty(opt)) counts[opt]++;
+    });
+
+    return Object.entries(counts).reduce((a, b) => a[1] >= b[1] ? a : b)[0];
+  }
+
+  /**
+   * Get fallback Elder message
+   */
+  getFallbackElderMessage() {
+    const messages = [
+      "The mycelium stirs with quiet purpose. Next: Contribute one needed item.",
+      "Patience, as roots deepen slowly. Next: Contribute one needed item.",
+      "The grove awaits your offerings. Next: Contribute one needed item."
+    ];
+    return messages[Math.floor(Math.random() * messages.length)];
   }
 
   /**
