@@ -1,4 +1,4 @@
-# Mushroom Village 🍄
+# Mushroom Village
 
 A minimal, demo-ready multiplayer chat app where Elder Mycel (an NPC) interacts with multiple users, and backstage agents manage logistics.
 

@@ -22,6 +22,7 @@ import { sporocarpBroker } from './agents/broker.js';
 import { adminTools } from './admin.js';
 import { janitorAdapter } from './adapters/janitor.js';
 import { lettaAdapter } from './adapters/letta.js';
+import { mycelialSteward } from './adapters/mycelial-steward.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -47,7 +48,8 @@ const server = createServer((req, res) => {
       timestamp: Date.now(),
       adapters: {
         janitor: janitorAdapter.getStatus(),
-        letta: lettaAdapter.getStatus()
+        letta: lettaAdapter.getStatus(),
+        mycelialSteward: mycelialSteward.getStatus()
       },
       state: adminTools.getStateSummary()
     }));
@@ -474,17 +476,127 @@ async function handleAdminCommand(ws, client, message) {
   }));
 }
 
-// Periodic tasks
-setInterval(() => {
-  // Check vote expiry
-  lamellaTallykeeper.checkVoteExpiry();
-  
-  // Clean stale offers
-  sporocarpBroker.cleanStaleOffers();
-  
-  // Update quest progress
-  rhizomorphQuartermaster.updateQuestProgress();
-}, 10000); // Every 10 seconds
+// Server tick orchestration with MycelialSteward
+async function serverTick() {
+  try {
+    // Prepare trimmed state for MycelialSteward
+    const input = mycelialSteward.trimState({
+      players: Array.from(gameState.players.values()),
+      stockpile: gameState.stockpile,
+      activeQuest: gameState.nowRing.activeQuest,
+      activeVote: gameState.nowRing.activeVote,
+      openOffers: sporocarpBroker.getOpenOffers(),
+      memoryStones: gameState.getMemoryStones(),
+      recentActions: gameState.nowRing.topRecentActions,
+      journalQueue: lichenArchivist.getPendingJournals(),
+      messagesSincePulse: gameState.messagesSinceLastPulse,
+      lastPulseTime: gameState.lastPulseTime,
+      activeWarnings: Array.from(saproprobeWarden.warnings.entries()).map(([playerId, count]) => ({
+        playerId,
+        count
+      }))
+    });
+
+    // Call MycelialSteward orchestration
+    const patch = await mycelialSteward.orchestrate(input);
+
+    // Apply patch operations in order
+
+    // 1. TRADES: Cancel/resolve offers
+    for (const offerId of patch.trades.cancel) {
+      const offer = gameState.getOffer(offerId);
+      if (offer) {
+        offer.status = 'CANCELLED';
+        console.log(`[Steward] Cancelled stale offer: ${offerId}`);
+      }
+    }
+    if (patch.trades.cancel.length > 0) {
+      broadcast(createMessage(MessageType.TRADE_STATUS, {
+        offers: sporocarpBroker.getOpenOffers()
+      }));
+    }
+
+    // 2. VOTE: Close if needed
+    if (patch.vote.close && gameState.nowRing.activeVote) {
+      const result = await lamellaTallykeeper.closeVote();
+      if (result) {
+        broadcast(createMessage(MessageType.VOTE_STATUS, {
+          vote: result.vote,
+          decisionCard: patch.vote.decisionCard || result.decisionCard
+        }));
+        console.log(`[Steward] Closed vote: ${result.vote.topic} - Winner: ${result.winner}`);
+      }
+    }
+
+    // 3. RESOURCES: Update quest progress
+    if (patch.resources.questPercentDelta !== 0 && gameState.nowRing.activeQuest) {
+      gameState.nowRing.activeQuest.percent = Math.min(100, 
+        Math.max(0, (gameState.nowRing.activeQuest.percent || 0) + patch.resources.questPercentDelta)
+      );
+      broadcast(createMessage(MessageType.QUEST_STATUS, {
+        quest: gameState.nowRing.activeQuest,
+        stockpile: gameState.stockpile
+      }));
+    }
+
+    // 4. ARCHIVE: Promote journals and prune stones
+    for (const journalId of patch.archive.promoteJournals) {
+      await lichenArchivist.promoteToStone(journalId);
+      console.log(`[Steward] Promoted journal: ${journalId}`);
+    }
+    
+    for (const stoneId of patch.archive.pruneStones) {
+      const index = gameState.canonRing.findIndex(s => s.id === stoneId);
+      if (index !== -1) {
+        gameState.canonRing.splice(index, 1);
+        console.log(`[Steward] Pruned stone: ${stoneId}`);
+      }
+    }
+
+    if (patch.archive.promoteJournals.length > 0 || patch.archive.pruneStones.length > 0) {
+      broadcast(createMessage(MessageType.STATE_UPDATE, {
+        stones: gameState.getMemoryStones()
+      }));
+    }
+
+    // 5. SAFETY: Issue warnings
+    for (const warning of patch.safety.warnings) {
+      const player = gameState.getPlayer(warning.playerId);
+      if (player && warning.action === 'warn') {
+        console.log(`[Steward] Warning issued to ${player.name}: ${warning.reason}`);
+      }
+    }
+
+    // 6. CADENCE: Trigger Elder if needed
+    if (patch.cadence.shouldElderSpeak) {
+      const context = gameState.getElderContext();
+      const elderPrompt = `TRIGGER: ${patch.cadence.triggerReason}\n` +
+        `Recent activity in the village. ${gameState.messagesSinceLastPulse} messages since last pulse.\n` +
+        `Active quest: ${context.activeQuest?.name || 'none'}\n` +
+        `Active vote: ${context.activeVote?.topic || 'none'}`;
+
+      const elderResponse = await janitorAdapter.generateResponse(elderPrompt, context);
+      
+      gameState.resetPulseCounter();
+      gameState.elderLastSpoke = Date.now();
+
+      broadcast(createMessage(MessageType.ELDER_SAY, {
+        text: elderResponse,
+        trigger: patch.cadence.triggerReason || 'pulse',
+        timestamp: Date.now()
+      }));
+
+      console.log(`[Steward] Elder spoke: ${patch.cadence.triggerReason}`);
+    }
+
+  } catch (error) {
+    console.error('[Steward] Server tick error:', error);
+    // Continue operation even if tick fails
+  }
+}
+
+// Run server tick every 10 seconds
+setInterval(serverTick, 10000);
 
 // Start server
 server.listen(PORT, () => {
