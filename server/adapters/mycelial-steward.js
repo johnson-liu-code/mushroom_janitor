@@ -57,9 +57,17 @@ class MycelialSteward {
   constructor() {
     this.mode = process.env.LLM_MODE || 'MOCK';
     this.apiKey = process.env.LETTA_API_KEY;
+    this.baseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.ai/v1';
     this.healthy = true;
     this.lastError = null;
+    this.lastRequestId = null;
     this.systemPrompt = this.loadSystemPrompt();
+    
+    // Default to MOCK if no API key
+    if (!this.apiKey && this.mode === 'LIVE') {
+      console.warn('[MycelialSteward] No LETTA_API_KEY found, defaulting to MOCK mode');
+      this.mode = 'MOCK';
+    }
   }
 
   loadSystemPrompt() {
@@ -79,53 +87,157 @@ Always return valid JSON matching the output schema.`;
   }
 
   /**
-   * Main orchestration method
+   * Send tick to Letta API and return patch
+   * @param {Object} state - Unified state payload
+   * @returns {Promise<Object>} Normalized patch output
+   */
+  async sendTick(state) {
+    const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    this.lastRequestId = requestId;
+
+    if (this.mode === 'LIVE' && this.apiKey) {
+      try {
+        console.log(`[MycelialSteward:${requestId}] Sending tick to Letta API`);
+        const result = await this.callLettaAPI(state, requestId);
+        this.healthy = true;
+        this.lastError = null;
+        const patch = this.validatePatchShape(result);
+        console.log(`[MycelialSteward:${requestId}] Success - cadence: ${patch.cadence.shouldElderSpeak}, vote: ${patch.vote.close}`);
+        return patch;
+      } catch (error) {
+        console.error(`[MycelialSteward:${requestId}] Error - ${error.message}, falling back to MOCK`);
+        this.healthy = false;
+        this.lastError = error.message;
+        return this.mockOrchestrate({ state, context: state.context || {} });
+      }
+    }
+
+    console.log(`[MycelialSteward:${requestId}] MOCK mode`);
+    return this.mockOrchestrate({ state, context: state.context || {} });
+  }
+
+  /**
+   * Main orchestration method (backwards compatible)
    * @param {Object} input - Unified input state
    * @returns {Promise<Object>} Normalized patch output
    */
   async orchestrate(input) {
-    if (this.mode === 'LIVE' && this.apiKey) {
-      try {
-        const result = await this.callLettaAPI(input);
-        this.healthy = true;
-        this.lastError = null;
-        return this.validateAndNormalize(result);
-      } catch (error) {
-        console.error('Letta API error, falling back to MOCK:', error);
-        this.healthy = false;
-        this.lastError = error.message;
-        return this.mockOrchestrate(input);
-      }
-    }
-
-    return this.mockOrchestrate(input);
+    return this.sendTick(input.state || input);
   }
 
   /**
-   * Call Letta API with unified input
+   * Call Letta API with unified input and timeout
    */
-  async callLettaAPI(input) {
-    const endpoint = 'https://api.letta.ai/v1/agents/execute';
+  async callLettaAPI(input, requestId) {
+    const endpoint = `${this.baseUrl}/agents/execute`;
+    const timeout = 10000; // 10 second timeout
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`
-      },
-      body: JSON.stringify({
-        agent: 'mycelial-steward',
-        system_prompt: this.systemPrompt,
-        input
-      })
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-    if (!response.ok) {
-      throw new Error(`Letta API error: ${response.status}`);
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`
+        },
+        body: JSON.stringify({
+          agent: 'mycelial-steward',
+          system_prompt: this.systemPrompt,
+          input
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.result || data;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error.name === 'AbortError') {
+        throw new Error('Request timeout (>10s)');
+      }
+      throw error;
     }
+  }
 
-    const data = await response.json();
-    return data.result;
+  /**
+   * Validate patch shape and return no-op if malformed
+   */
+  validatePatchShape(response) {
+    try {
+      // Try to parse if string
+      let parsed = response;
+      if (typeof response === 'string') {
+        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+          console.warn('[MycelialSteward] No JSON found in response');
+          return this.getNoOpPatch();
+        }
+        parsed = JSON.parse(jsonMatch[0]);
+      }
+
+      // Validate required keys
+      const requiredKeys = ['cadence', 'vote', 'resources', 'trades', 'archive', 'safety'];
+      const hasAllKeys = requiredKeys.every(key => key in parsed);
+      
+      if (!hasAllKeys) {
+        console.warn('[MycelialSteward] Missing required keys, using no-op patch');
+        return this.getNoOpPatch();
+      }
+
+      // Normalize with safe defaults
+      return {
+        trades: {
+          resolve: Array.isArray(parsed.trades?.resolve) ? parsed.trades.resolve : [],
+          cancel: Array.isArray(parsed.trades?.cancel) ? parsed.trades.cancel : []
+        },
+        vote: {
+          close: Boolean(parsed.vote?.close),
+          decisionCard: parsed.vote?.decisionCard || null
+        },
+        resources: {
+          stockpileDeltas: parsed.resources?.stockpileDeltas || {},
+          questPercentDelta: Number(parsed.resources?.questPercentDelta) || 0
+        },
+        archive: {
+          promoteJournals: Array.isArray(parsed.archive?.promoteJournals) ? parsed.archive.promoteJournals : [],
+          pruneStones: Array.isArray(parsed.archive?.pruneStones) ? parsed.archive.pruneStones : [],
+          newStones: Array.isArray(parsed.archive?.newStones) ? parsed.archive.newStones : []
+        },
+        safety: {
+          warnings: Array.isArray(parsed.safety?.warnings) ? parsed.safety.warnings : [],
+          calmDown: Array.isArray(parsed.safety?.calmDown) ? parsed.safety.calmDown : []
+        },
+        cadence: {
+          shouldElderSpeak: Boolean(parsed.cadence?.shouldElderSpeak),
+          triggerReason: parsed.cadence?.triggerReason || null
+        }
+      };
+    } catch (error) {
+      console.error('[MycelialSteward] Failed to validate patch shape:', error.message);
+      return this.getNoOpPatch();
+    }
+  }
+
+  /**
+   * Get a safe no-op patch (no changes, Elder doesn't speak)
+   */
+  getNoOpPatch() {
+    return {
+      trades: { resolve: [], cancel: [] },
+      vote: { close: false, decisionCard: null },
+      resources: { stockpileDeltas: {}, questPercentDelta: 0 },
+      archive: { promoteJournals: [], pruneStones: [], newStones: [] },
+      safety: { warnings: [], calmDown: [] },
+      cadence: { shouldElderSpeak: false, triggerReason: null }
+    };
   }
 
   /**

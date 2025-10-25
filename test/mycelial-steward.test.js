@@ -1,7 +1,46 @@
 // Unit tests for MycelialSteward adapter
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import { mycelialSteward } from '../server/adapters/mycelial-steward.js';
+
+// Helper to create starter payload
+function createStarterPayload() {
+  return {
+    timestamp: Date.now(),
+    players: [
+      { id: 'p1', name: 'Alice', inventory: { moss: 5 }, messageCount: 2 }
+    ],
+    stockpile: { moss: 10, cedar: 5, resin: 2, spores: 0, charms: 0 },
+    activeQuest: {
+      id: 'quest1',
+      name: 'Gather for Winter',
+      recipe: { moss: 20, cedar: 10 },
+      percent: 45
+    },
+    activeVote: {
+      id: 'vote1',
+      topic: 'Where to build?',
+      options: ['North', 'South'],
+      tally: { 'p1': 'North' },
+      closesAt: Date.now() + 60000,
+      status: 'OPEN'
+    },
+    openOffers: [],
+    memoryStones: [
+      { id: 's1', title: 'First Stone', text: 'The beginning.', tags: ['origin'] }
+    ],
+    recentActions: [],
+    journalQueue: [
+      { id: 'j1', playerId: 'p1', text: 'A wonderful day', timestamp: Date.now() - (6 * 60 * 1000) }
+    ],
+    context: {
+      messagesSincePulse: 2,
+      timeSincePulse: 15000,
+      activeWarnings: [],
+      priorQuestPercent: 45
+    }
+  };
+}
 
 describe('MycelialSteward - Test Vectors', () => {
   
@@ -159,20 +198,18 @@ describe('MycelialSteward - Test Vectors', () => {
 
   // Test Vector 5: Cadence Burst (Rapid Messages)
   it('should trigger Elder on message burst', async () => {
-    const input = {
+    const payload = {
       timestamp: Date.now(),
-      state: {
-        players: [
-          { id: 'p1', name: 'Alice', inventory: {}, messageCount: 12 }
-        ],
-        stockpile: { moss: 0, cedar: 0, resin: 0, spores: 0, charms: 0 },
-        activeQuest: null,
-        activeVote: null,
-        openOffers: [],
-        memoryStones: [],
-        recentActions: [],
-        journalQueue: []
-      },
+      players: [
+        { id: 'p1', name: 'Alice', inventory: {}, messageCount: 12 }
+      ],
+      stockpile: { moss: 0, cedar: 0, resin: 0, spores: 0, charms: 0 },
+      activeQuest: null,
+      activeVote: null,
+      openOffers: [],
+      memoryStones: [],
+      recentActions: [],
+      journalQueue: [],
       context: {
         messagesSincePulse: 6, // Exceeds threshold of 5
         timeSincePulse: 10000,
@@ -180,7 +217,7 @@ describe('MycelialSteward - Test Vectors', () => {
       }
     };
 
-    const patch = await mycelialSteward.orchestrate(input);
+    const patch = await mycelialSteward.sendTick(payload);
     
     // Should trigger Elder due to message threshold
     assert.strictEqual(patch.cadence.shouldElderSpeak, true);
@@ -272,7 +309,7 @@ describe('MycelialSteward - State Trimming', () => {
       stockpile: { moss: 100, cedar: 50, resin: 25, spores: 10, charms: 5 },
       activeQuest: { id: 'q1', name: 'Test Quest' },
       activeVote: null,
-      openOffers: Array.from({ length: 20 }, (_, i) => ({ id: `offer${i}` })),
+      openOffers: Array.from({ length: 20 }, (_, i) => ({ id: `offer${i}`, createdAt: Date.now() })),
       memoryStones: [],
       recentActions: Array.from({ length: 50 }, (_, i) => ({ id: `action${i}` })),
       journalQueue: [],
@@ -291,5 +328,151 @@ describe('MycelialSteward - State Trimming', () => {
     assert.strictEqual(trimmed.state.recentActions.length, 20); // Limited to 20
     assert.ok(trimmed.context.messagesSincePulse >= 0);
     assert.ok(trimmed.context.timeSincePulse >= 0);
+  });
+});
+
+describe('MycelialSteward - New Requirements Tests', () => {
+  
+  // Test 1: Starter payload assertions
+  it('should handle starter payload correctly', async () => {
+    const payload = createStarterPayload();
+    // Add two more players so 1/3 votes is clearly below 50% quorum
+    payload.players.push({ id: 'p2', name: 'Bob', inventory: {}, messageCount: 0 });
+    payload.players.push({ id: 'p3', name: 'Carol', inventory: {}, messageCount: 0 });
+    
+    const patch = await mycelialSteward.sendTick(payload);
+    
+    // Assert patch shape has all required keys
+    assert.ok('cadence' in patch, 'Should have cadence key');
+    assert.ok('vote' in patch, 'Should have vote key');
+    assert.ok('resources' in patch, 'Should have resources key');
+    assert.ok('trades' in patch, 'Should have trades key');
+    assert.ok('archive' in patch, 'Should have archive key');
+    assert.ok('safety' in patch, 'Should have safety key');
+    
+    // Vote should stay OPEN (1/3 voted = 33% < 50% quorum)
+    assert.strictEqual(patch.vote.close, false, 'Vote should remain OPEN');
+    
+    // Quest resources calculated from current stockpile
+    // Recipe: moss:20, cedar:10 = 30 total. Have: 10+5=15 = 50%. Was at 45%, so delta is 5%
+    assert.strictEqual(patch.resources.questPercentDelta, 5, 'Quest should progress to 50%');
+    
+    // Archive should promote old journal (>5 min old)
+    assert.ok(patch.archive.promoteJournals.length > 0, 'Should promote old journal');
+    assert.strictEqual(patch.archive.promoteJournals[0], 'j1');
+  });
+
+  // Test 2: Quorum close scenario
+  it('should close vote when quorum is reached', async () => {
+    const payload = createStarterPayload();
+    // Add more players and votes to reach quorum
+    payload.players = [
+      { id: 'p1', name: 'Alice', inventory: {}, messageCount: 0 },
+      { id: 'p2', name: 'Bob', inventory: {}, messageCount: 0 },
+      { id: 'p3', name: 'Carol', inventory: {}, messageCount: 0 }
+    ];
+    payload.activeVote.tally = {
+      'p1': 'North',
+      'p2': 'North'
+    };
+    
+    const patch = await mycelialSteward.sendTick(payload);
+    
+    // Quorum: 2/3 = 66.6% >= 50%
+    assert.strictEqual(patch.vote.close, true, 'Vote should close with quorum');
+    assert.ok(patch.vote.decisionCard, 'Should generate decision card');
+    assert.strictEqual(patch.vote.decisionCard.winner, 'North');
+  });
+
+  // Test 3: Quest 50% threshold
+  it('should detect quest 50% threshold crossing', async () => {
+    const payload = createStarterPayload();
+    // Set stockpile to push quest to exactly 50%
+    // Recipe: moss:20, cedar:10 = 30 total
+    // For 50%: need 15 total
+    // Currently at 45%: 13.5 items (moss:10, cedar:5 = 15 items = 50%)
+    payload.stockpile = { moss: 10, cedar: 5, resin: 0, spores: 0, charms: 0 };
+    payload.activeQuest.percent = 45;
+    payload.context.priorQuestPercent = 45;
+    
+    const patch = await mycelialSteward.sendTick(payload);
+    
+    // Should calculate new percent
+    // Total: moss:10 (min(10,20)) + cedar:5 (min(5,10)) = 15
+    // Percent: 15/30 * 100 = 50%
+    // Delta: 50 - 45 = 5
+    assert.ok(patch.resources.questPercentDelta >= 5, 'Should show progress toward 50%');
+  });
+
+  // Test 4: Malformed Letta response → no-op patch
+  it('should return no-op patch for malformed response', () => {
+    const malformed = "This is not valid JSON {broken";
+    const patch = mycelialSteward.validatePatchShape(malformed);
+    
+    // Should return safe no-op patch
+    assert.strictEqual(patch.cadence.shouldElderSpeak, false);
+    assert.deepStrictEqual(patch.trades.resolve, []);
+    assert.deepStrictEqual(patch.trades.cancel, []);
+    assert.strictEqual(patch.vote.close, false);
+    assert.deepStrictEqual(patch.resources.stockpileDeltas, {});
+    assert.strictEqual(patch.resources.questPercentDelta, 0);
+  });
+
+  // Test 5: Missing keys in response → no-op patch
+  it('should return no-op patch for response missing required keys', () => {
+    const incomplete = {
+      trades: { resolve: [], cancel: [] },
+      vote: { close: false }
+      // Missing: resources, archive, safety, cadence
+    };
+    
+    const patch = mycelialSteward.validatePatchShape(incomplete);
+    
+    // Should return safe no-op patch
+    assert.strictEqual(patch.cadence.shouldElderSpeak, false);
+    assert.ok('resources' in patch);
+    assert.ok('archive' in patch);
+    assert.ok('safety' in patch);
+  });
+
+  // Test 6: Valid response with all keys
+  it('should validate and normalize complete response', () => {
+    const validResponse = {
+      trades: { resolve: ['offer1'], cancel: [] },
+      vote: { close: true, decisionCard: { topic: 'test', winner: 'A' } },
+      resources: { stockpileDeltas: { moss: 5 }, questPercentDelta: 10 },
+      archive: { promoteJournals: ['j1'], pruneStones: [], newStones: [] },
+      safety: { warnings: [], calmDown: [] },
+      cadence: { shouldElderSpeak: true, triggerReason: 'test' }
+    };
+    
+    const patch = mycelialSteward.validatePatchShape(validResponse);
+    
+    // Should preserve all values
+    assert.deepStrictEqual(patch.trades.resolve, ['offer1']);
+    assert.strictEqual(patch.vote.close, true);
+    assert.strictEqual(patch.resources.questPercentDelta, 10);
+    assert.deepStrictEqual(patch.archive.promoteJournals, ['j1']);
+    assert.strictEqual(patch.cadence.shouldElderSpeak, true);
+    assert.strictEqual(patch.cadence.triggerReason, 'test');
+  });
+
+  // Test 7: getNoOpPatch returns safe defaults
+  it('should return safe no-op patch', () => {
+    const noOp = mycelialSteward.getNoOpPatch();
+    
+    assert.deepStrictEqual(noOp.trades.resolve, []);
+    assert.deepStrictEqual(noOp.trades.cancel, []);
+    assert.strictEqual(noOp.vote.close, false);
+    assert.strictEqual(noOp.vote.decisionCard, null);
+    assert.deepStrictEqual(noOp.resources.stockpileDeltas, {});
+    assert.strictEqual(noOp.resources.questPercentDelta, 0);
+    assert.deepStrictEqual(noOp.archive.promoteJournals, []);
+    assert.deepStrictEqual(noOp.archive.pruneStones, []);
+    assert.deepStrictEqual(noOp.archive.newStones, []);
+    assert.deepStrictEqual(noOp.safety.warnings, []);
+    assert.deepStrictEqual(noOp.safety.calmDown, []);
+    assert.strictEqual(noOp.cadence.shouldElderSpeak, false);
+    assert.strictEqual(noOp.cadence.triggerReason, null);
   });
 });

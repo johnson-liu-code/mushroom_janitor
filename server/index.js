@@ -56,6 +56,29 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // Status endpoint with detailed adapter info
+  if (req.url === '/status') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      server: {
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        timestamp: Date.now()
+      },
+      adapters: {
+        letta: mycelialSteward.getStatus(),
+        janitor: janitorAdapter.getStatus()
+      },
+      game: {
+        players: gameState.players.size,
+        memoryStones: gameState.canonRing.length,
+        activeQuest: gameState.nowRing.activeQuest?.name || null,
+        activeVote: gameState.nowRing.activeVote?.topic || null
+      }
+    }));
+    return;
+  }
+
   // Serve frontend
   if (req.url === '/' || req.url === '/index.html') {
     try {
@@ -478,10 +501,20 @@ async function handleAdminCommand(ws, client, message) {
 
 // Server tick orchestration with MycelialSteward
 async function serverTick() {
+  const tickId = `tick_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+  
   try {
-    // Prepare trimmed state for MycelialSteward
-    const input = mycelialSteward.trimState({
-      players: Array.from(gameState.players.values()),
+    // Build unified payload with prior quest percent
+    const priorQuestPercent = gameState.nowRing.activeQuest?.percent || 0;
+    
+    const payload = {
+      timestamp: Date.now(),
+      players: Array.from(gameState.players.values()).map(p => ({
+        id: p.id,
+        name: p.name,
+        inventory: p.inventory,
+        messageCount: p.messageCount || 0
+      })),
       stockpile: gameState.stockpile,
       activeQuest: gameState.nowRing.activeQuest,
       activeVote: gameState.nowRing.activeVote,
@@ -489,50 +522,69 @@ async function serverTick() {
       memoryStones: gameState.getMemoryStones(),
       recentActions: gameState.nowRing.topRecentActions,
       journalQueue: lichenArchivist.getPendingJournals(),
-      messagesSincePulse: gameState.messagesSinceLastPulse,
-      lastPulseTime: gameState.lastPulseTime,
-      activeWarnings: Array.from(saproprobeWarden.warnings.entries()).map(([playerId, count]) => ({
-        playerId,
-        count
-      }))
-    });
+      context: {
+        messagesSincePulse: gameState.messagesSinceLastPulse,
+        timeSincePulse: Date.now() - gameState.lastPulseTime,
+        activeWarnings: Array.from(saproprobeWarden.warnings.entries()).map(([playerId, count]) => ({
+          playerId,
+          count
+        })),
+        priorQuestPercent
+      }
+    };
 
-    // Call MycelialSteward orchestration
-    const patch = await mycelialSteward.orchestrate(input);
+    console.log(`[${tickId}] Starting server tick - stones: ${payload.memoryStones.length}, players: ${payload.players.length}`);
+
+    // Call sendTick to get patch
+    const patch = await mycelialSteward.sendTick(payload);
 
     // Apply patch operations in order
 
     // 1. TRADES: Cancel/resolve offers
-    for (const offerId of patch.trades.cancel) {
-      const offer = gameState.getOffer(offerId);
-      if (offer) {
-        offer.status = 'CANCELLED';
-        console.log(`[Steward] Cancelled stale offer: ${offerId}`);
-      }
-    }
     if (patch.trades.cancel.length > 0) {
+      console.log(`[${tickId}] Cancelling ${patch.trades.cancel.length} stale offers`);
+      for (const offerId of patch.trades.cancel) {
+        const offer = gameState.getOffer(offerId);
+        if (offer) {
+          offer.status = 'CANCELLED';
+        }
+      }
       broadcast(createMessage(MessageType.TRADE_STATUS, {
         offers: sporocarpBroker.getOpenOffers()
       }));
     }
 
+    if (patch.trades.resolve.length > 0) {
+      console.log(`[${tickId}] Resolving ${patch.trades.resolve.length} trades`);
+    }
+
     // 2. VOTE: Close if needed
     if (patch.vote.close && gameState.nowRing.activeVote) {
+      const vote = gameState.nowRing.activeVote;
       const result = await lamellaTallykeeper.closeVote();
       if (result) {
+        console.log(`[${tickId}] Vote closed: "${vote.topic}" - Winner: ${result.winner}`);
         broadcast(createMessage(MessageType.VOTE_STATUS, {
           vote: result.vote,
           decisionCard: patch.vote.decisionCard || result.decisionCard
         }));
-        console.log(`[Steward] Closed vote: ${result.vote.topic} - Winner: ${result.winner}`);
       }
     }
 
     // 3. RESOURCES: Update quest progress
     if (patch.resources.questPercentDelta !== 0 && gameState.nowRing.activeQuest) {
-      gameState.nowRing.activeQuest.percent = Math.min(100, 
-        Math.max(0, (gameState.nowRing.activeQuest.percent || 0) + patch.resources.questPercentDelta)
-      );
+      const oldPercent = gameState.nowRing.activeQuest.percent || 0;
+      const newPercent = Math.min(100, Math.max(0, oldPercent + patch.resources.questPercentDelta));
+      gameState.nowRing.activeQuest.percent = newPercent;
+      
+      // Log quest threshold crossings
+      const thresholds = [25, 50, 75, 100];
+      for (const threshold of thresholds) {
+        if (oldPercent < threshold && newPercent >= threshold) {
+          console.log(`[${tickId}] Quest threshold reached: ${threshold}% - "${gameState.nowRing.activeQuest.name}"`);
+        }
+      }
+      
       broadcast(createMessage(MessageType.QUEST_STATUS, {
         quest: gameState.nowRing.activeQuest,
         stockpile: gameState.stockpile
@@ -540,57 +592,64 @@ async function serverTick() {
     }
 
     // 4. ARCHIVE: Promote journals and prune stones
+    const stonesBefore = gameState.canonRing.length;
+    
     for (const journalId of patch.archive.promoteJournals) {
       await lichenArchivist.promoteToStone(journalId);
-      console.log(`[Steward] Promoted journal: ${journalId}`);
     }
     
     for (const stoneId of patch.archive.pruneStones) {
       const index = gameState.canonRing.findIndex(s => s.id === stoneId);
       if (index !== -1) {
         gameState.canonRing.splice(index, 1);
-        console.log(`[Steward] Pruned stone: ${stoneId}`);
       }
     }
 
-    if (patch.archive.promoteJournals.length > 0 || patch.archive.pruneStones.length > 0) {
+    const stonesAfter = gameState.canonRing.length;
+    if (stonesBefore !== stonesAfter) {
+      console.log(`[${tickId}] Stone count changed: ${stonesBefore} → ${stonesAfter} (promoted: ${patch.archive.promoteJournals.length}, pruned: ${patch.archive.pruneStones.length})`);
       broadcast(createMessage(MessageType.STATE_UPDATE, {
         stones: gameState.getMemoryStones()
       }));
     }
 
     // 5. SAFETY: Issue warnings
-    for (const warning of patch.safety.warnings) {
-      const player = gameState.getPlayer(warning.playerId);
-      if (player && warning.action === 'warn') {
-        console.log(`[Steward] Warning issued to ${player.name}: ${warning.reason}`);
-      }
+    if (patch.safety.warnings.length > 0) {
+      console.log(`[${tickId}] Safety warnings issued: ${patch.safety.warnings.length}`);
     }
 
     // 6. CADENCE: Trigger Elder if needed
     if (patch.cadence.shouldElderSpeak) {
+      const requestId = `elder_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+      console.log(`[${tickId}] Cadence triggered: ${patch.cadence.triggerReason}`);
+      console.log(`[Janitor:${requestId}] Composing Elder input bundle`);
+      
       const context = gameState.getElderContext();
       const elderPrompt = `TRIGGER: ${patch.cadence.triggerReason}\n` +
-        `Recent activity in the village. ${gameState.messagesSinceLastPulse} messages since last pulse.\n` +
-        `Active quest: ${context.activeQuest?.name || 'none'}\n` +
-        `Active vote: ${context.activeVote?.topic || 'none'}`;
+        `Recent activity: ${gameState.messagesSinceLastPulse} messages since last pulse.\n` +
+        `Quest: ${context.activeQuest?.name || 'none'} (${context.activeQuest?.percent || 0}%)\n` +
+        `Vote: ${context.activeVote?.topic || 'none'}`;
 
-      const elderResponse = await janitorAdapter.generateResponse(elderPrompt, context);
-      
-      gameState.resetPulseCounter();
-      gameState.elderLastSpoke = Date.now();
+      try {
+        const elderResponse = await janitorAdapter.generateResponse(elderPrompt, context);
+        
+        gameState.resetPulseCounter();
+        gameState.elderLastSpoke = Date.now();
 
-      broadcast(createMessage(MessageType.ELDER_SAY, {
-        text: elderResponse,
-        trigger: patch.cadence.triggerReason || 'pulse',
-        timestamp: Date.now()
-      }));
+        broadcast(createMessage(MessageType.ELDER_SAY, {
+          text: elderResponse,
+          trigger: patch.cadence.triggerReason || 'pulse',
+          timestamp: Date.now()
+        }));
 
-      console.log(`[Steward] Elder spoke: ${patch.cadence.triggerReason}`);
+        console.log(`[Janitor:${requestId}] Success - Elder spoke`);
+      } catch (error) {
+        console.error(`[Janitor:${requestId}] Error - ${error.message}`);
+      }
     }
 
   } catch (error) {
-    console.error('[Steward] Server tick error:', error);
+    console.error(`[${tickId}] Server tick error:`, error);
     // Continue operation even if tick fails
   }
 }
