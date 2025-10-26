@@ -16,7 +16,8 @@ import normalizeLettaPatch from './letta_normalizer.js';
  *     openOffers: [{id, fromPlayer, give, want}],
  *     memoryStones: [{id, title, text, tags}],
  *     recentActions: [{playerId, action, text, timestamp}],
- *     journalQueue: [{id, playerId, text, timestamp}]
+ *     journalQueue: [{id, playerId, text, timestamp}],
+ *     batchedMessages: [{user, text, timestamp, intent}]
  *   },
  *   context: {
  *     messagesSincePulse: number,
@@ -51,6 +52,15 @@ import normalizeLettaPatch from './letta_normalizer.js';
  *   cadence: {
  *     shouldElderSpeak: boolean,
  *     triggerReason?: string
+ *   },
+ *   elder_instructions: {
+ *     should_speak: boolean,
+ *     mode: "broadcast" | "dm",
+ *     target_user_id: string | null,
+ *     tone: "encouraging" | "warning" | "celebratory" | "reflective" | "neutral",
+ *     context_summary: string,
+ *     referenced_messages: [userId],
+ *     conversation_thread: string
  *   }
  * }
  */
@@ -574,6 +584,19 @@ Always return valid JSON matching the output schema.`;
         calmDown: Array.isArray(parsed.safety?.calmDown) ? parsed.safety.calmDown : []
       };
 
+      // 7. ELDER_INSTRUCTIONS: New orchestration field
+      const elderInst = parsed.elder_instructions || {};
+      normalized.elder_instructions = {
+        should_speak: Boolean(elderInst.should_speak),
+        mode: elderInst.mode === 'dm' ? 'dm' : 'broadcast',
+        target_user_id: elderInst.target_user_id || null,
+        tone: ['encouraging', 'warning', 'celebratory', 'reflective', 'neutral'].includes(elderInst.tone) 
+          ? elderInst.tone : 'neutral',
+        context_summary: elderInst.context_summary || '',
+        referenced_messages: Array.isArray(elderInst.referenced_messages) ? elderInst.referenced_messages : [],
+        conversation_thread: elderInst.conversation_thread || ''
+      };
+
       return normalized;
     } catch (error) {
       console.error('[MycelialSteward] Normalization error:', error.message);
@@ -598,7 +621,16 @@ Always return valid JSON matching the output schema.`;
       resources: { needs: [], threshold_crossed: false, crossed_at: null, stockpileDeltas: {}, questPercentDelta: 0 },
       archive: { promote_ids: [], prune_ids: [], new_stones: [], merge_pairs: [] },
       safety: { flags: [], notes_for_elder: null, warnings: [], calmDown: [] },
-      cadence: { shouldElderSpeak: false, triggerReason: null, mode: null, question: null }
+      cadence: { shouldElderSpeak: false, triggerReason: null, mode: null, question: null },
+      elder_instructions: {
+        should_speak: false,
+        mode: 'broadcast',
+        target_user_id: null,
+        tone: 'neutral',
+        context_summary: '',
+        referenced_messages: [],
+        conversation_thread: ''
+      }
     };
   }
 
@@ -745,7 +777,16 @@ Always return valid JSON matching the output schema.`;
       resources: { stockpileDeltas: {}, questPercentDelta: 0 },
       archive: { promoteJournals: [], pruneStones: [], newStones: [] },
       safety: { warnings: [], calmDown: [] },
-      cadence: { shouldElderSpeak: false, triggerReason: null }
+      cadence: { shouldElderSpeak: false, triggerReason: null },
+      elder_instructions: {
+        should_speak: false,
+        mode: 'broadcast',
+        target_user_id: null,
+        tone: 'neutral',
+        context_summary: '',
+        referenced_messages: [],
+        conversation_thread: ''
+      }
     };
 
     const { state, context } = input;
@@ -829,6 +870,41 @@ Always return valid JSON matching the output schema.`;
     if (context.messagesSincePulse >= 5 || context.timeSincePulse >= 30000) {
       patch.cadence.shouldElderSpeak = true;
       patch.cadence.triggerReason = context.messagesSincePulse >= 5 ? 'message_threshold' : 'time_threshold';
+    }
+
+    // 7. ELDER_INSTRUCTIONS: Analyze batched messages if present
+    const batchedMessages = state.batchedMessages || [];
+    if (batchedMessages.length > 0) {
+      // Extract user names from messages
+      const userIds = [...new Set(batchedMessages.map(m => m.user))];
+      
+      // Simple context summary
+      const messageCount = batchedMessages.length;
+      const summary = `${messageCount} recent message${messageCount > 1 ? 's' : ''} from ${userIds.length} player${userIds.length > 1 ? 's' : ''}`;
+      
+      // Detect if anyone is asking Elder questions
+      const questionsToElder = batchedMessages.filter(m => 
+        m.text && (m.text.toLowerCase().includes('elder') || m.text.includes('?'))
+      );
+      
+      if (questionsToElder.length > 0) {
+        patch.elder_instructions.should_speak = true;
+        patch.elder_instructions.mode = 'broadcast';
+        patch.elder_instructions.tone = 'encouraging';
+        patch.elder_instructions.context_summary = `Players asking questions: ${questionsToElder.map(m => m.text.substring(0, 50)).join('; ')}`;
+        patch.elder_instructions.referenced_messages = questionsToElder.map(m => m.user);
+        patch.elder_instructions.conversation_thread = 'questions';
+      } else if (patch.cadence.shouldElderSpeak) {
+        patch.elder_instructions.should_speak = true;
+        patch.elder_instructions.context_summary = summary;
+        patch.elder_instructions.referenced_messages = userIds.slice(0, 2); // Acknowledge up to 2 users
+        patch.elder_instructions.conversation_thread = 'general';
+      }
+    } else if (patch.cadence.shouldElderSpeak) {
+      // No messages, but cadence says Elder should speak
+      patch.elder_instructions.should_speak = true;
+      patch.elder_instructions.context_summary = 'Routine pulse check-in';
+      patch.elder_instructions.conversation_thread = 'pulse';
     }
 
     return patch;

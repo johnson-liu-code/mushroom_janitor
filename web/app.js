@@ -136,6 +136,10 @@ class MushroomVillageClient {
         if (message.data.player) {
           this.playerId = message.data.playerId;
         }
+        // Update inventory if provided
+        if (message.data.inventory) {
+          this.updateInventory(message.data.inventory);
+        }
         break;
       
       case 'USER_CHAT':
@@ -144,6 +148,10 @@ class MushroomVillageClient {
       
       case 'ELDER_SAY':
         this.addElderMessage(message.data);
+        break;
+      
+      case 'ELDER_DM':
+        this.addElderDM(message.data);
         break;
       
       case 'STATE_UPDATE':
@@ -249,6 +257,52 @@ class MushroomVillageClient {
     if (data.trades) this.updateTrades(data.trades);
   }
 
+  // NEW: Quick action methods for UI buttons
+  quickGather(item) {
+    this.send({
+      type: 'USER_CHAT',
+      text: `/gather ${item}`
+    });
+  }
+
+  quickDonate(item) {
+    this.send({
+      type: 'USER_CHAT',
+      text: `/donate ${item} x1`
+    });
+  }
+
+  createTradeOffer() {
+    const giveItem = document.getElementById('give-item').value;
+    const giveQty = document.getElementById('give-qty').value;
+    const wantItem = document.getElementById('want-item').value;
+    const wantQty = document.getElementById('want-qty').value;
+    
+    if (!giveQty || !wantQty || giveQty < 1 || wantQty < 1) {
+      alert('Please enter valid quantities');
+      return;
+    }
+    
+    this.send({
+      type: 'USER_CHAT',
+      text: `/offer give ${giveItem} x${giveQty} for ${wantItem} x${wantQty}`
+    });
+    
+    // Reset form
+    document.getElementById('give-qty').value = '1';
+    document.getElementById('want-qty').value = '1';
+  }
+
+  // NEW: Update player inventory display
+  updateInventory(inventory) {
+    if (!inventory) return;
+    
+    document.getElementById('inv-moss').textContent = inventory.moss || 0;
+    document.getElementById('inv-cedar').textContent = inventory.cedar || 0;
+    document.getElementById('inv-resin').textContent = inventory.resin || 0;
+    document.getElementById('inv-spores').textContent = inventory.spores || 0;
+  }
+
   updateQuest(quest) {
     const content = document.getElementById('quest-content');
     const bellQuest = document.getElementById('bell-quest');
@@ -338,8 +392,7 @@ class MushroomVillageClient {
     }
     
     content.innerHTML = offers.map(offer => {
-      const player = gameState.getPlayer(offer.fromPlayer);
-      const fromName = player?.name || 'Unknown';
+      const fromName = offer.fromPlayer || 'Unknown';
       
       return `
         <div class="trade-offer">
@@ -434,6 +487,38 @@ class MushroomVillageClient {
     if (modal) {
       modal.remove();
     }
+  }
+
+  // NEW: Handle Elder private messages
+  addElderDM(data) {
+    const dmContent = document.getElementById('dm-content');
+    const badge = document.getElementById('dm-badge');
+    
+    // Create DM element
+    const dmDiv = document.createElement('div');
+    dmDiv.className = 'dm-message';
+    dmDiv.innerHTML = `
+      <div class="dm-header">
+        <span class="dm-from">🍄 Elder Mycel</span>
+        <span class="dm-time">${new Date(data.timestamp).toLocaleTimeString()}</span>
+      </div>
+      <div class="dm-text">${data.text}</div>
+    `;
+    
+    // Replace empty state or prepend to existing messages
+    if (dmContent.querySelector('.panel-empty')) {
+      dmContent.innerHTML = '';
+    }
+    dmContent.insertBefore(dmDiv, dmContent.firstChild);
+    
+    // Update badge
+    if (data.unreadCount && data.unreadCount > 0) {
+      badge.textContent = data.unreadCount;
+      badge.style.display = 'inline-block';
+    }
+    
+    // Add notification sound effect (optional)
+    console.log('📜 New private message from Elder Mycel');
   }
 }
 

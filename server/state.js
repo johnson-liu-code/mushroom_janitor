@@ -35,6 +35,9 @@ class GameState {
     // Message history (in-memory)
     this.messages = [];
 
+    // Private messages (Elder → Player DMs)
+    this.privateMessages = new Map(); // playerId -> [{text, timestamp, read}]
+
     // Initialize with seed data
     this._seedInitialStones();
   }
@@ -54,6 +57,10 @@ class GameState {
 
   addPlayer(player) {
     this.players.set(player.id, player);
+    // Initialize private message queue for this player
+    if (!this.privateMessages.has(player.id)) {
+      this.privateMessages.set(player.id, []);
+    }
   }
 
   updatePlayerInventory(playerId, item, amount) {
@@ -279,6 +286,41 @@ class GameState {
       offers: Array.from(this.offers.values()),
       timestamp: Date.now()
     };
+  }
+
+  // Private message management
+  addPrivateMessage(playerId, text) {
+    if (!this.privateMessages.has(playerId)) {
+      this.privateMessages.set(playerId, []);
+    }
+    
+    const messages = this.privateMessages.get(playerId);
+    messages.push({
+      text,
+      timestamp: Date.now(),
+      read: false
+    });
+    
+    // Keep only last 20 DMs per player
+    if (messages.length > 20) {
+      this.privateMessages.set(playerId, messages.slice(-20));
+    }
+  }
+
+  getPrivateMessages(playerId) {
+    return this.privateMessages.get(playerId) || [];
+  }
+
+  markPrivateMessagesRead(playerId) {
+    const messages = this.privateMessages.get(playerId);
+    if (messages) {
+      messages.forEach(m => m.read = true);
+    }
+  }
+
+  getUnreadDMCount(playerId) {
+    const messages = this.privateMessages.get(playerId) || [];
+    return messages.filter(m => !m.read).length;
   }
 
   // Get condensed context for Elder

@@ -273,6 +273,27 @@ function buildUserMessage(input) {
 
   parts.push(`MODE: ${input.mode}`);
 
+  // NEW: Add conversation context from Letta if present
+  if (input.conversation_context) {
+    const ctx = input.conversation_context;
+    
+    if (ctx.tone && ctx.tone !== 'neutral') {
+      parts.push(`TONE: ${ctx.tone.toUpperCase()}`);
+    }
+    
+    if (ctx.summary) {
+      parts.push(`CONVERSATION CONTEXT: ${ctx.summary}`);
+    }
+    
+    if (ctx.thread) {
+      parts.push(`THREAD: ${ctx.thread}`);
+    }
+    
+    if (ctx.acknowledge_users && ctx.acknowledge_users.length > 0) {
+      parts.push(`ACKNOWLEDGE: ${ctx.acknowledge_users.join(', ')}`);
+    }
+  }
+
   if (input.question) {
     parts.push(`QUESTION: ${input.question}`);
   }

@@ -344,6 +344,19 @@ const wss = new WebSocketServer({ server });
 // Track connected clients
 const clients = new Map(); // ws -> { playerId, playerName }
 
+// Message batching for Letta
+const messageQueue = [];
+const MESSAGE_BATCH_THRESHOLD = 5; // Send batch when queue reaches this size
+const MESSAGE_BATCH_INTERVAL = 10000; // Or send every 10 seconds
+
+// Batch sender interval
+setInterval(() => {
+  if (messageQueue.length > 0) {
+    console.log(`[BatchSender] Flushing ${messageQueue.length} queued messages`);
+    // Messages will be picked up by next serverTick
+  }
+}, MESSAGE_BATCH_INTERVAL);
+
 // Broadcast to all clients
 function broadcast(message, excludeWs = null) {
   const data = JSON.stringify(message);
@@ -495,6 +508,14 @@ async function handleUserChat(ws, client, text) {
     return;
   }
 
+  // Queue message for batch processing
+  messageQueue.push({
+    user: client.playerName,
+    text,
+    timestamp: Date.now(),
+    intent: intent.type
+  });
+
   // Broadcast user message
   broadcast(createMessage(MessageType.USER_CHAT, {
     playerId: client.playerId,
@@ -504,18 +525,14 @@ async function handleUserChat(ws, client, text) {
     timestamp: Date.now()
   }));
 
-  // Execute intent
+  // Execute intent immediately (for immediate game state updates)
   await executeIntent(ws, client, intent);
 
-  // Check if Elder should respond
-  const elderResponse = await mycelialConductor.processMessage({ text, intent }, client.playerId);
-  
-  if (elderResponse) {
-    broadcast(createMessage(MessageType.ELDER_SAY, {
-      text: elderResponse.text,
-      trigger: elderResponse.trigger,
-      timestamp: elderResponse.timestamp
-    }));
+  // Check if we should trigger immediate batch processing
+  if (messageQueue.length >= MESSAGE_BATCH_THRESHOLD) {
+    console.log(`[BatchSender] Threshold reached (${messageQueue.length} messages), triggering tick`);
+    // Trigger serverTick immediately (it will pick up the queued messages)
+    setImmediate(serverTick);
   }
 }
 
@@ -747,6 +764,9 @@ async function serverTick() {
     // Build unified payload with prior quest percent
     const priorQuestPercent = gameState.nowRing.activeQuest?.percent || 0;
     
+    // Capture and clear batched messages
+    const batchedMessages = messageQueue.splice(0, messageQueue.length);
+    
     const payload = {
       timestamp: Date.now(),
       players: Array.from(gameState.players.values()).map(p => ({
@@ -762,6 +782,7 @@ async function serverTick() {
       memoryStones: gameState.getMemoryStones(),
       recentActions: gameState.nowRing.topRecentActions,
       journalQueue: lichenArchivist.getPendingJournals(),
+      batchedMessages,  // NEW: Include batched messages
       context: {
         messagesSincePulse: gameState.messagesSinceLastPulse,
         timeSincePulse: Date.now() - gameState.lastPulseTime,
@@ -773,7 +794,7 @@ async function serverTick() {
       }
     };
 
-    console.log(`[${tickId}] Starting server tick - stones: ${payload.memoryStones.length}, players: ${payload.players.length}`);
+    console.log(`[${tickId}] Starting server tick - stones: ${payload.memoryStones.length}, players: ${payload.players.length}, batched messages: ${batchedMessages.length}`);
 
     // Call sendTick to get raw patch
     const rawPatch = await mycelialSteward.sendTick(payload);
@@ -837,7 +858,8 @@ async function serverTick() {
       const elderInput = buildElderInput(gameState, patch.cadence, {
         top_recent_actions: gameState.nowRing.topRecentActions,
         last_messages_summary: gameState.lastMessagesSummary || [],
-        safety_notes: patch.safety?.notes_for_elder || null
+        safety_notes: patch.safety?.notes_for_elder || null,
+        elder_instructions: patch.elder_instructions || {}
       });
 
       try {
@@ -868,22 +890,59 @@ async function serverTick() {
           nudge
         });
 
-        // Push into message history
-        gameState.messages.push({
-          type: 'ELDER_SAY',
-          text,
-          nudge,
-          at: Date.now()
-        });
+        // Check if this should be a DM or broadcast
+        const isDM = patch.elder_instructions?.mode === 'dm';
+        const targetUserId = patch.elder_instructions?.target_user_id;
+        
+        if (isDM && targetUserId) {
+          // Send as private message to specific player
+          gameState.addPrivateMessage(targetUserId, text);
+          
+          // Find the WebSocket connection for this player
+          let targetWs = null;
+          for (const [ws, client] of clients.entries()) {
+            if (client.playerId === targetUserId || client.playerName === targetUserId) {
+              targetWs = ws;
+              break;
+            }
+          }
+          
+          if (targetWs) {
+            sendToClient(targetWs, createMessage(MessageType.ELDER_DM, {
+              text,
+              timestamp: Date.now(),
+              unreadCount: gameState.getUnreadDMCount(targetUserId)
+            }));
+            console.log(`[Elder:${requestId}] Success - Elder sent DM to ${targetUserId}`);
+          } else {
+            console.log(`[Elder:${requestId}] Warning - Player ${targetUserId} not connected, DM queued`);
+          }
+          
+          // Also log to message history with DM marker
+          gameState.messages.push({
+            type: 'ELDER_DM',
+            text,
+            nudge,
+            targetUser: targetUserId,
+            at: Date.now()
+          });
+        } else {
+          // Broadcast to all players
+          gameState.messages.push({
+            type: 'ELDER_SAY',
+            text,
+            nudge,
+            at: Date.now()
+          });
 
-        // Broadcast Elder message
-        broadcast(createMessage(MessageType.ELDER_SAY, {
-          text,
-          trigger: patch.cadence.triggerReason || patch.cadence.trigger_reason || 'pulse',
-          timestamp: Date.now()
-        }));
+          broadcast(createMessage(MessageType.ELDER_SAY, {
+            text,
+            trigger: patch.cadence.triggerReason || patch.cadence.trigger_reason || 'pulse',
+            timestamp: Date.now()
+          }));
 
-        console.log(`[Elder:${requestId}] Success - Elder spoke`);
+          console.log(`[Elder:${requestId}] Success - Elder spoke (broadcast)`);
+        }
       } catch (error) {
         console.error(`[Elder:${requestId}] Error - ${error.message}`);
         
@@ -1098,7 +1157,8 @@ async function handleChatCommand(data) {
         text: m.text,
         at: m.at
       })),
-      safety_notes: patch.safety?.notes_for_elder || null
+      safety_notes: patch.safety?.notes_for_elder || null,
+      elder_instructions: patch.elder_instructions || {}
     });
     
     try {

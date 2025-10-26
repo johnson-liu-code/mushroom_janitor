@@ -10,7 +10,7 @@
  * 
  * @param {Object} state - Game state instance
  * @param {Object} cadence - Cadence info from patch (mode, reason, question)
- * @param {Object} summaries - { top_recent_actions, last_messages_summary, safety_notes }
+ * @param {Object} summaries - { top_recent_actions, last_messages_summary, safety_notes, elder_instructions }
  * @returns {Object} ElderInput object
  */
 export function buildElderInput(state, cadence, summaries) {
@@ -107,6 +107,13 @@ export function buildElderInput(state, cadence, summaries) {
   // Safety notes
   const safetyNotes = summaries.safety_notes || null;
 
+  // Elder instructions from Letta (conversation context)
+  const elderInstructions = summaries.elder_instructions || {};
+  const tone = elderInstructions.tone || 'neutral';
+  const contextSummary = elderInstructions.context_summary || '';
+  const referencedMessages = elderInstructions.referenced_messages || [];
+  const conversationThread = elderInstructions.conversation_thread || '';
+
   return {
     mode,
     canon_stones: canonStones,
@@ -118,6 +125,13 @@ export function buildElderInput(state, cadence, summaries) {
     top_recent_actions: topRecentActions,
     last_messages_summary: lastMessagesSummary,
     safety_notes: safetyNotes,
-    question
+    question,
+    // NEW: Rich conversation context from Letta
+    conversation_context: {
+      tone,
+      summary: contextSummary,
+      thread: conversationThread,
+      acknowledge_users: referencedMessages
+    }
   };
 }

@@ -6,6 +6,7 @@ export const MessageType = {
   SYSTEM_NOTE: 'SYSTEM_NOTE',
   INTENT: 'INTENT',
   ELDER_SAY: 'ELDER_SAY',
+  ELDER_DM: 'ELDER_DM',  // Private message from Elder to specific player
   VOTE_STATUS: 'VOTE_STATUS',
   QUEST_STATUS: 'QUEST_STATUS',
   QUEST_COMPLETED: 'QUEST_COMPLETED',
