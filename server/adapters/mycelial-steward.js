@@ -54,33 +54,26 @@ import normalizeLettaPatch from './letta_normalizer.js';
  * }
  */
 
+/**
+ * Compute Letta mode at call time based on environment
+ */
+function computeLettaMode() {
+  const llm = (process.env.LLM_MODE || '').trim().toUpperCase();
+  const hasKey = !!process.env.LETTA_API_KEY;
+  
+  if (llm === 'LIVE' && hasKey) {
+    return { mode: 'LIVE', reason: null };
+  }
+  if (llm !== 'LIVE') {
+    return { mode: 'MOCK', reason: "LLM_MODE!='LIVE'" };
+  }
+  return { mode: 'MOCK', reason: 'missing LETTA_API_KEY' };
+}
+
 class MycelialSteward {
   constructor() {
     this.apiKey = process.env.LETTA_API_KEY;
     this.baseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.ai/v1';
-    
-    // LIVE mode requires both LLM_MODE=LIVE AND a valid API key
-    const llmMode = process.env.LLM_MODE;
-    const hasApiKey = !!this.apiKey;
-    
-    if (llmMode === 'LIVE' && hasApiKey) {
-      this.mode = 'LIVE';
-      this.mockReason = null;
-    } else {
-      this.mode = 'MOCK';
-      // Store reason for MOCK mode
-      if (llmMode !== 'LIVE') {
-        this.mockReason = 'LLM_MODE not set to LIVE';
-      } else if (!hasApiKey) {
-        this.mockReason = 'no LETTA_API_KEY configured';
-      } else {
-        this.mockReason = 'unknown';
-      }
-      
-      if (llmMode === 'LIVE' && !hasApiKey) {
-        console.warn('[MycelialSteward] LLM_MODE=LIVE but no LETTA_API_KEY found, using MOCK mode');
-      }
-    }
     
     this.healthy = true;
     this.lastError = null;
@@ -113,7 +106,10 @@ Always return valid JSON matching the output schema.`;
     const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
     this.lastRequestId = requestId;
 
-    if (this.mode === 'LIVE' && this.apiKey) {
+    // Compute mode at call time
+    const { mode, reason } = computeLettaMode();
+
+    if (mode === 'LIVE' && this.apiKey) {
       try {
         console.log(`[MycelialSteward:${requestId}] Sending tick to Letta API`);
         const result = await this.callLettaAPI(state, requestId);
@@ -130,7 +126,7 @@ Always return valid JSON matching the output schema.`;
       }
     }
 
-    console.log(`[MycelialSteward:${requestId}] MOCK mode`);
+    console.log(`[MycelialSteward:${requestId}] MOCK mode${reason ? ` (${reason})` : ''}`);
     return this.mockOrchestrate({ state, context: state.context || {} });
   }
 
@@ -555,15 +551,18 @@ Always return valid JSON matching the output schema.`;
    * Get adapter status
    */
   getStatus() {
+    // Compute mode at call time
+    const { mode, reason } = computeLettaMode();
+    
     const status = {
-      mode: this.mode,
+      mode,
       healthy: this.healthy,
       last_error: this.lastError
     };
     
     // Include reason when in MOCK mode
-    if (this.mode === 'MOCK' && this.mockReason) {
-      status.reason = this.mockReason;
+    if (mode === 'MOCK' && reason) {
+      status.reason = reason;
     }
     
     return status;
