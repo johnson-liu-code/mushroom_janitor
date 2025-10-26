@@ -285,12 +285,18 @@ Always return valid JSON matching the output schema.`;
             ]
             }
         ],
-        stream: false // ADD THIS LINE - tells Letta to wait for complete response
+        stream: false
         };
         
         console.log(`[MycelialSteward:${requestId}] Calling agents.messages.create with stream=false`);
-        const response = await client.agents.messages.create(agentId, body);
-        
+        const LETTA_TIMEOUT_MS = 30000;
+        const responsePromise = client.agents.messages.create(agentId, body);
+        const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Letta timeout')), LETTA_TIMEOUT_MS)
+        );
+        const response = await Promise.race([responsePromise, timeoutPromise]);
+        console.log(`[MycelialSteward:${requestId}] Raw response:`, JSON.stringify(response, null, 2));
+
         // Response should now contain complete message immediately
         let assistantText = null;
         
@@ -529,7 +535,6 @@ Always return valid JSON matching the output schema.`;
         referenced_messages: [],
         conversation_thread: ''
       },
-      elder_message: null,
       npc_message: null
     };
   }
@@ -638,6 +643,7 @@ Always return valid JSON matching the output schema.`;
     }
 
     // 3. RESOURCES: Calculate quest progress
+    let questPercent = 0;
     if (state.activeQuest) {
       let totalRequired = 0;
       let totalHave = 0;
@@ -645,8 +651,9 @@ Always return valid JSON matching the output schema.`;
         totalRequired += qty;
         totalHave += Math.min(state.stockpile[item] || 0, qty);
       }
-      const newPercent = totalRequired > 0 ? Math.floor((totalHave / totalRequired) * 100) : 0;
-      patch.resources.questPercentDelta = newPercent - (state.activeQuest.percent || 0);
+      questPercent = totalRequired > 0 ? Math.floor((totalHave / totalRequired) * 100) : 0;
+      patch.resources.questPercentDelta = questPercent - (state.activeQuest.percent || 0);
+      patch.resources.quest_percent = questPercent;
     }
 
     // 4. ARCHIVE: Promote old journals, prune if >12 stones
@@ -717,6 +724,32 @@ Always return valid JSON matching the output schema.`;
       patch.elder_instructions.conversation_thread = 'pulse';
     }
 
+    // Generate npc_message if should speak
+    if (patch.elder_instructions.should_speak) {
+      const batchedCount = input.state?.batchedMessages?.length || 0;
+      
+      let text = "The mycelial network hums. ";
+      if (questPercent < 25) {
+        text += "Winter preparations have just begun.";
+      } else if (questPercent < 50) {
+        text += `We're making progress—${questPercent}% ready.`;
+      } else if (questPercent < 75) {
+        text += `Halfway through winter prep—${questPercent}% complete.`;
+      } else if (questPercent < 100) {
+        text += `Nearly ready for winter—${questPercent}% gathered.`;
+      } else {
+        text += "Through your hands, the village is prepared!";
+      }
+      
+      patch.npc_message = {
+        npc: "elder",
+        text: text,
+        should_npc_speak: true,
+        nudge: null,
+        referenced_stones: [],
+        acknowledged_users: patch.elder_instructions.referenced_messages || []
+      };
+    }
     return patch;
   }
 

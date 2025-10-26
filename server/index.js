@@ -780,9 +780,12 @@ async function serverTick() {
     const currentSnapshot = createStateSnapshot(gameState);
     
     // Detect changes since last tick
-    const changes = previousStateSnapshot 
-      ? detectStateChanges(previousStateSnapshot, currentSnapshot)
-      : { hasSignificantChanges: true, details: ['Initial tick'] }; // Always process first tick
+const changes = previousStateSnapshot
+  ? detectStateChanges(previousStateSnapshot, currentSnapshot)
+  : { 
+      hasSignificantChanges: messageQueue.length > 0, 
+      details: messageQueue.length > 0 ? ['Initial tick with messages'] : ['Initial tick, no messages']
+    };
     
     // Update previous snapshot for next tick
     previousStateSnapshot = currentSnapshot;
