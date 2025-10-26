@@ -29,6 +29,33 @@ import { parseCommand } from './command_parser.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 
+// Store last normalized patch for debugging
+let lastNormalizedPatch = null;
+
+/**
+ * Compute canonical quest percent from stockpile and recipe
+ * Backend is source of truth
+ */
+function computeQuestPercent(stockpile, recipe) {
+  if (!recipe || Object.keys(recipe).length === 0) {
+    return 0;
+  }
+  
+  const ratios = [];
+  for (const [item, required] of Object.entries(recipe)) {
+    if (required > 0) {
+      const have = stockpile[item] || 0;
+      ratios.push(Math.min(have / required, 1.0));
+    }
+  }
+  
+  if (ratios.length === 0) return 0;
+  
+  // Use minimum ratio (bottleneck item)
+  const minRatio = Math.min(...ratios);
+  return Math.floor(minRatio * 100);
+}
+
 // HTTP Server
 const server = createServer((req, res) => {
   // CORS headers
@@ -195,9 +222,19 @@ const server = createServer((req, res) => {
       { method: 'GET', path: '/debug/letta-ping' },
       { method: 'GET', path: '/debug/letta-last' },
       { method: 'GET', path: '/debug/last-elder' },
+      { method: 'GET', path: '/debug/patch' },
       { method: 'POST', path: '/debug/run-tick' },
       { method: 'GET', path: '/debug/routes' }
     ]));
+    return;
+  }
+
+  // Debug endpoint: GET /debug/patch
+  if (req.url === '/debug/patch') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      patch: lastNormalizedPatch
+    }));
     return;
   }
 
