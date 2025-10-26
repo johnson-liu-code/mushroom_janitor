@@ -84,6 +84,7 @@ class MycelialSteward {
     // Ring buffer for last LIVE request/response
     this.lastRequest = null;
     this.lastResponsePreview = null;
+    this.lastRun = null;
   }
 
   loadSystemPrompt() {
@@ -145,58 +146,80 @@ Always return valid JSON matching the output schema.`;
   }
 
   /**
-   * Robust assistant text extraction from Letta SDK response
+   * Wait for run completion by polling
    */
-  extractAssistantText(res) {
-    // Helper to concatenate text parts
-    const concatTextParts = (content) => {
-      if (typeof content === 'string') return content;
-      if (Array.isArray(content)) {
-        return content
-          .filter(part => part.type === 'text' && part.text)
-          .map(part => part.text)
-          .join('\n');
-      }
-      return null;
-    };
+  async waitForRunCompletion(client, runId, { timeoutMs = 20000, pollMs = 500 } = {}) {
+    const startTime = Date.now();
     
-    // Try different response structures in order
-    // 1) res.message?.content
-    if (res.message?.content) {
-      const text = concatTextParts(res.message.content);
-      if (text) return text;
+    while (Date.now() - startTime < timeoutMs) {
+      try {
+        const run = await client.runs.retrieve(runId);
+        const status = run.status;
+        
+        if (['completed', 'failed', 'cancelled', 'expired'].includes(status)) {
+          return { status, run };
+        }
+        
+        // Wait before next poll
+        await new Promise(resolve => setTimeout(resolve, pollMs));
+      } catch (err) {
+        console.warn(`[MycelialSteward] Error polling run ${runId}: ${err.message}`);
+        return { status: 'error', run: null };
+      }
     }
     
-    // 2) res.messages?.[res.messages.length-1]?.content (last message)
-    if (res.messages && res.messages.length > 0) {
-      // Find last assistant message
-      for (let i = res.messages.length - 1; i >= 0; i--) {
-        const msg = res.messages[i];
-        if (msg.role === 'assistant') {
-          const text = concatTextParts(msg.content);
-          if (text) return text;
+    return { status: 'timeout', run: null };
+  }
+
+  /**
+   * Extract text from message content parts
+   */
+  extractTextFromMessageContent(contentParts) {
+    if (typeof contentParts === 'string') {
+      return contentParts;
+    }
+    
+    if (Array.isArray(contentParts)) {
+      const textParts = [];
+      for (const part of contentParts) {
+        // Handle various text formats
+        if (typeof part === 'string') {
+          textParts.push(part);
+        } else if (part.type === 'text' && part.text) {
+          textParts.push(part.text);
+        } else if (part.type === 'output_text' && part.text) {
+          textParts.push(part.text);
+        } else if (part.text) {
+          textParts.push(part.text);
         }
       }
+      return textParts.length > 0 ? textParts.join('\n') : null;
     }
     
-    // 3) res.assistant_message?.content
-    if (res.assistant_message?.content) {
-      const text = concatTextParts(res.assistant_message.content);
-      if (text) return text;
-    }
+    return null;
+  }
+
+  /**
+   * Try to extract JSON from text robustly
+   */
+  tryExtractJson(text) {
+    if (!text) return null;
     
-    // 4) res.data?.[0]?.message?.content
-    if (res.data && res.data.length > 0 && res.data[0].message?.content) {
-      const text = concatTextParts(res.data[0].message.content);
-      if (text) return text;
-    }
-    
-    // 5) res.run?.messages with assistant filter
-    if (res.run?.messages) {
-      const assistantMsgs = res.run.messages.filter(m => m.role === 'assistant');
-      if (assistantMsgs.length > 0) {
-        const text = concatTextParts(assistantMsgs[assistantMsgs.length - 1].content);
-        if (text) return text;
+    // Try direct parse first
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      // Try extracting between first { and last }
+      const firstBrace = text.indexOf('{');
+      const lastBrace = text.lastIndexOf('}');
+      
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        const jsonSubstr = text.substring(firstBrace, lastBrace + 1);
+        try {
+          return JSON.parse(jsonSubstr);
+        } catch (e2) {
+          return null;
+        }
       }
     }
     
@@ -204,7 +227,7 @@ Always return valid JSON matching the output schema.`;
   }
 
   /**
-   * Call Letta API via SDK with robust error handling
+   * Call Letta API via SDK with robust error handling and run polling
    */
   async callLettaAPI(input, requestId) {
     try {
@@ -241,62 +264,121 @@ Always return valid JSON matching the output schema.`;
       };
       
       // Call SDK to send message
+      console.log(`[MycelialSteward:${requestId}] Calling agents.messages.create`);
       const response = await client.agents.messages.create(agentId, body);
       
-      // Store raw response preview (first 400 chars for debugging)
-      const responsePreview = JSON.stringify(response).substring(0, 400);
+      // Attempt to extract assistant text in priority order
+      let assistantText = null;
       
-      // Extract assistant text using robust helper
-      const resultContent = this.extractAssistantText(response);
-      
-      // Store last response preview
-      this.lastResponsePreview = resultContent ? resultContent.substring(0, 400) : responsePreview;
-      
-      if (!resultContent) {
-        this.lastError = "no assistant content";
-        console.warn(`[MycelialSteward:${requestId}] No assistant content in response, returning no-op patch`);
-        return this.getNoOpPatch();
+      // a) res.message?.content
+      if (response.message?.content) {
+        assistantText = this.extractTextFromMessageContent(response.message.content);
+        if (assistantText) {
+          console.log(`[MycelialSteward:${requestId}] Found assistant text in response.message.content`);
+        }
       }
       
-      // Parse JSON robustly
-      // 1) First try direct JSON.parse
-      try {
-        const parsed = JSON.parse(resultContent);
-        return parsed;
-      } catch (parseError) {
-        // 2) Try to extract JSON by finding first { and last }
-        console.warn(`[MycelialSteward:${requestId}] Failed direct parse: ${parseError.message}, trying substring extraction`);
-        
-        const firstBrace = resultContent.indexOf('{');
-        const lastBrace = resultContent.lastIndexOf('}');
-        
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-          const jsonSubstr = resultContent.substring(firstBrace, lastBrace + 1);
-          try {
-            const parsed = JSON.parse(jsonSubstr);
-            return parsed;
-          } catch (e) {
-            this.lastError = "assistant content not JSON";
-            console.warn(`[MycelialSteward:${requestId}] Failed substring parse, returning no-op patch`);
-            return this.getNoOpPatch();
+      // b) res.messages?.filter(m => m.role==='assistant').pop()?.content
+      if (!assistantText && response.messages && response.messages.length > 0) {
+        const assistantMsgs = response.messages.filter(m => m.role === 'assistant');
+        if (assistantMsgs.length > 0) {
+          assistantText = this.extractTextFromMessageContent(assistantMsgs[assistantMsgs.length - 1].content);
+          if (assistantText) {
+            console.log(`[MycelialSteward:${requestId}] Found assistant text in response.messages`);
           }
         }
+      }
+      
+      // c) res.messages?.filter(m => m.messageType==='assistant_message').pop()?.content
+      if (!assistantText && response.messages && response.messages.length > 0) {
+        const assistantMsgs = response.messages.filter(m => m.messageType === 'assistant_message');
+        if (assistantMsgs.length > 0) {
+          assistantText = this.extractTextFromMessageContent(assistantMsgs[assistantMsgs.length - 1].content);
+          if (assistantText) {
+            console.log(`[MycelialSteward:${requestId}] Found assistant text in messageType==='assistant_message'`);
+          }
+        }
+      }
+      
+      // If no assistant text found and res.runId exists, poll for run completion
+      if (!assistantText && response.runId) {
+        console.log(`[MycelialSteward:${requestId}] No assistant text in immediate response, polling run ${response.runId}`);
         
-        this.lastError = "assistant content not JSON";
-        console.warn(`[MycelialSteward:${requestId}] No valid JSON found, returning no-op patch`);
+        const { status, run } = await this.waitForRunCompletion(client, response.runId);
+        this.lastRun = { runId: response.runId, polledStatus: status };
+        
+        if (status === 'completed' && run) {
+          console.log(`[MycelialSteward:${requestId}] Run completed, fetching messages`);
+          
+          // Fetch run messages
+          try {
+            const runMessages = await client.runs.messages.list(response.runId);
+            
+            if (runMessages && runMessages.length > 0) {
+              // Find last assistant message
+              for (let i = runMessages.length - 1; i >= 0; i--) {
+                const msg = runMessages[i];
+                if (msg.role === 'assistant' || msg.messageType === 'assistant_message') {
+                  assistantText = this.extractTextFromMessageContent(msg.content);
+                  if (assistantText) {
+                    console.log(`[MycelialSteward:${requestId}] Found assistant text in run messages`);
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (msgErr) {
+            console.warn(`[MycelialSteward:${requestId}] Error fetching run messages: ${msgErr.message}`);
+          }
+        } else {
+          console.warn(`[MycelialSteward:${requestId}] Run polling failed with status: ${status}`);
+        }
+      }
+      
+      // Store response preview
+      if (assistantText) {
+        this.lastResponsePreview = assistantText.substring(0, 400);
+      } else {
+        // Build summary of what we saw
+        const msgTypes = response.messages?.map(m => m.role || m.messageType).join(', ') || 'none';
+        this.lastResponsePreview = `messages[${response.messages?.length || 0}] types: ${msgTypes}${response.runId ? `, runId: ${response.runId}` : ''}`;
+      }
+      
+      // If still no assistant text, return no-op
+      if (!assistantText) {
+        this.lastError = "no assistant content".substring(0, 200);
+        this.healthy = false;
+        console.warn(`[MycelialSteward:${requestId}] No assistant content found, returning no-op patch`);
         return this.getNoOpPatch();
       }
+      
+      // Try to extract JSON
+      const parsedJson = this.tryExtractJson(assistantText);
+      
+      if (!parsedJson) {
+        this.lastError = "assistant content not JSON".substring(0, 200);
+        this.healthy = false;
+        console.warn(`[MycelialSteward:${requestId}] Assistant content not valid JSON, returning no-op patch`);
+        return this.getNoOpPatch();
+      }
+      
+      // Success!
+      this.healthy = true;
+      this.lastError = null;
+      return parsedJson;
+      
     } catch (err) {
       // Capture error details with truncation
       let errorDetails = String(err);
       if (err.body) {
         const bodyStr = typeof err.body === 'string' ? err.body : JSON.stringify(err.body);
-        errorDetails = bodyStr.substring(0, 500);
+        errorDetails = bodyStr.substring(0, 200);
       } else if (err.message) {
-        errorDetails = err.message.substring(0, 500);
+        errorDetails = err.message.substring(0, 200);
       }
       
       this.lastError = errorDetails;
+      this.healthy = false;
       
       // Robust error formatting based on error type
       if (err.name === 'LettaError' || err.constructor.name === 'LettaError') {

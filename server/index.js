@@ -144,7 +144,8 @@ const server = createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       lastRequest: mycelialSteward.lastRequest,
-      lastResponsePreview: mycelialSteward.lastResponsePreview
+      lastResponsePreview: mycelialSteward.lastResponsePreview,
+      lastRun: mycelialSteward.lastRun
     }));
     return;
   }
