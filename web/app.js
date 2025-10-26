@@ -8,6 +8,22 @@ class MushroomVillageClient {
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
     
+    // Cooldown tracking: { resourceName: endTimestamp }
+    this.cooldowns = {
+      moss: 0,
+      cedar: 0,
+      resin: 0,
+      spores: 0
+    };
+    
+    // Cooldown durations in milliseconds
+    this.cooldownDurations = {
+      moss: 3000,    // 3 seconds
+      cedar: 4000,   // 4 seconds
+      resin: 5000,   // 5 seconds
+      spores: 6000   // 6 seconds (for spore game)
+    };
+    
     this.init();
   }
 
@@ -257,12 +273,20 @@ class MushroomVillageClient {
     if (data.trades) this.updateTrades(data.trades);
   }
 
-  // NEW: Quick action methods for UI buttons
+  // Quick action methods for UI buttons with cooldowns
   quickGather(item) {
+    // Check if on cooldown
+    if (this.isCooldown(item)) {
+      return;
+    }
+    
     this.send({
       type: 'USER_CHAT',
       text: `/gather ${item}`
     });
+    
+    // Start cooldown
+    this.startCooldown(item);
   }
 
   quickDonate(item) {
@@ -489,6 +513,61 @@ class MushroomVillageClient {
     }
   }
 
+  // Cooldown management
+  isCooldown(resource) {
+    return Date.now() < this.cooldowns[resource];
+  }
+
+  startCooldown(resource) {
+    const duration = this.cooldownDurations[resource];
+    this.cooldowns[resource] = Date.now() + duration;
+    
+    // Get button element
+    const button = document.querySelector(`[onclick="client.quickGather('${resource}')"]`);
+    if (!button) return;
+    
+    // Disable button
+    button.disabled = true;
+    button.style.position = 'relative';
+    button.style.overflow = 'hidden';
+    
+    // Create overlay and timer elements
+    const overlay = document.createElement('div');
+    overlay.className = 'cooldown-overlay';
+    overlay.style.width = '100%';
+    
+    const timer = document.createElement('div');
+    timer.className = 'cooldown-timer';
+    
+    button.appendChild(overlay);
+    button.appendChild(timer);
+    
+    // Update countdown
+    const updateCooldown = () => {
+      const remaining = this.cooldowns[resource] - Date.now();
+      
+      if (remaining <= 0) {
+        // Cooldown finished
+        button.disabled = false;
+        overlay.remove();
+        timer.remove();
+        return;
+      }
+      
+      // Update progress bar (reverse fill)
+      const progress = (remaining / duration) * 100;
+      overlay.style.width = `${progress}%`;
+      
+      // Update timer text
+      const seconds = Math.ceil(remaining / 1000);
+      timer.textContent = `${seconds}s`;
+      
+      requestAnimationFrame(updateCooldown);
+    };
+    
+    updateCooldown();
+  }
+
   // NEW: Handle Elder private messages
   addElderDM(data) {
     const dmContent = document.getElementById('dm-content');
@@ -519,6 +598,206 @@ class MushroomVillageClient {
     
     // Add notification sound effect (optional)
     console.log('📜 New private message from Elder Mycel');
+  }
+
+  // Spore Game Methods
+  startSporeGame() {
+    // Check cooldown
+    if (this.isCooldown('spores')) {
+      return;
+    }
+
+    // Show game panel
+    document.getElementById('spore-game-panel').style.display = 'block';
+    
+    // Initialize game
+    this.sporeGame = {
+      canvas: document.getElementById('spore-canvas'),
+      ctx: null,
+      score: 0,
+      timeLeft: 10,
+      isRunning: false,
+      spores: [],
+      animationFrame: null
+    };
+    
+    this.sporeGame.ctx = this.sporeGame.canvas.getContext('2d');
+    
+    // Set canvas size
+    const rect = this.sporeGame.canvas.getBoundingClientRect();
+    this.sporeGame.canvas.width = rect.width;
+    this.sporeGame.canvas.height = rect.height;
+    
+    // Start game
+    this.runSporeGame();
+  }
+
+  runSporeGame() {
+    const game = this.sporeGame;
+    game.isRunning = true;
+    game.score = 0;
+    game.timeLeft = 10;
+    game.spores = [];
+    
+    // Update UI
+    document.getElementById('spore-score').textContent = '0';
+    document.getElementById('spore-time').textContent = '10';
+    
+    // Add click handler
+    game.canvas.onclick = (e) => this.handleSporeClick(e);
+    
+    // Spawn spores periodically
+    const spawnInterval = setInterval(() => {
+      if (!game.isRunning) {
+        clearInterval(spawnInterval);
+        return;
+      }
+      
+      // Spawn 1-2 spores
+      const count = Math.random() > 0.5 ? 2 : 1;
+      for (let i = 0; i < count; i++) {
+        game.spores.push({
+          x: Math.random() * (game.canvas.width - 30) + 15,
+          y: -20,
+          radius: 12 + Math.random() * 8,
+          speed: 1 + Math.random() * 1.5,
+          color: `hsl(${Math.random() * 60 + 260}, 60%, 70%)`
+        });
+      }
+    }, 800);
+    
+    // Game timer
+    const timerInterval = setInterval(() => {
+      if (!game.isRunning) {
+        clearInterval(timerInterval);
+        return;
+      }
+      
+      game.timeLeft--;
+      document.getElementById('spore-time').textContent = game.timeLeft;
+      
+      if (game.timeLeft <= 0) {
+        this.endSporeGame();
+        clearInterval(timerInterval);
+        clearInterval(spawnInterval);
+      }
+    }, 1000);
+    
+    // Animation loop
+    const animate = () => {
+      if (!game.isRunning) {
+        return;
+      }
+      
+      // Clear canvas
+      game.ctx.fillStyle = 'linear-gradient(180deg, #F0F8EF 0%, #FAFAF8 100%)';
+      game.ctx.fillRect(0, 0, game.canvas.width, game.canvas.height);
+      
+      // Update and draw spores
+      game.spores = game.spores.filter(spore => {
+        spore.y += spore.speed;
+        
+        // Remove if off screen
+        if (spore.y > game.canvas.height + 30) {
+          return false;
+        }
+        
+        // Draw spore
+        game.ctx.beginPath();
+        game.ctx.arc(spore.x, spore.y, spore.radius, 0, Math.PI * 2);
+        game.ctx.fillStyle = spore.color;
+        game.ctx.fill();
+        game.ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+        game.ctx.lineWidth = 2;
+        game.ctx.stroke();
+        
+        // Draw highlight
+        game.ctx.beginPath();
+        game.ctx.arc(spore.x - spore.radius * 0.3, spore.y - spore.radius * 0.3, spore.radius * 0.3, 0, Math.PI * 2);
+        game.ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+        game.ctx.fill();
+        
+        return true;
+      });
+      
+      game.animationFrame = requestAnimationFrame(animate);
+    };
+    
+    animate();
+  }
+
+  handleSporeClick(e) {
+    const game = this.sporeGame;
+    if (!game.isRunning) return;
+    
+    const rect = game.canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    // Check if clicked on any spore
+    for (let i = game.spores.length - 1; i >= 0; i--) {
+      const spore = game.spores[i];
+      const distance = Math.sqrt((x - spore.x) ** 2 + (y - spore.y) ** 2);
+      
+      if (distance < spore.radius) {
+        // Hit!
+        game.score++;
+        document.getElementById('spore-score').textContent = game.score;
+        
+        // Remove spore
+        game.spores.splice(i, 1);
+        
+        // Visual feedback
+        game.ctx.beginPath();
+        game.ctx.arc(spore.x, spore.y, spore.radius * 1.5, 0, Math.PI * 2);
+        game.ctx.strokeStyle = '#7A9B76';
+        game.ctx.lineWidth = 3;
+        game.ctx.stroke();
+        
+        break;
+      }
+    }
+  }
+
+  endSporeGame() {
+    const game = this.sporeGame;
+    game.isRunning = false;
+    
+    if (game.animationFrame) {
+      cancelAnimationFrame(game.animationFrame);
+    }
+    
+    // Send contribution command with score
+    if (game.score > 0) {
+      this.send({
+        type: 'USER_CHAT',
+        text: `/contribute spores x${game.score}`
+      });
+    }
+    
+    // Show result
+    game.ctx.fillStyle = 'rgba(122, 155, 118, 0.9)';
+    game.ctx.fillRect(0, 0, game.canvas.width, game.canvas.height);
+    
+    game.ctx.fillStyle = 'white';
+    game.ctx.font = 'bold 32px Quicksand';
+    game.ctx.textAlign = 'center';
+    game.ctx.fillText('Game Over!', game.canvas.width / 2, game.canvas.height / 2 - 30);
+    
+    game.ctx.font = '20px Nunito';
+    game.ctx.fillText(`You caught ${game.score} spores!`, game.canvas.width / 2, game.canvas.height / 2 + 10);
+    
+    // Start cooldown
+    this.startCooldown('spores');
+  }
+
+  closeSporeGame() {
+    const game = this.sporeGame;
+    if (game && game.isRunning) {
+      this.endSporeGame();
+    }
+    
+    document.getElementById('spore-game-panel').style.display = 'none';
   }
 }
 

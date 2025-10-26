@@ -100,11 +100,28 @@
                 <span class="item-qty" id="inv-spores">0</span>
               </div>
               <div class="item-actions">
-                <button class="pixel-btn gather-btn" onclick="client.quickGather('spores')">Gather</button>
+                <button class="pixel-btn gather-btn" onclick="client.startSporeGame()">Play Game</button>
                 <button class="pixel-btn donate-btn" onclick="client.quickDonate('spores')">Donate</button>
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- Spore Catcher Minigame Panel -->
+        <div class="panel spore-game-container" id="spore-game-panel" style="display: none;">
+          <h3>🍄 Spore Drift</h3>
+          <canvas id="spore-canvas" class="spore-game-canvas" width="300" height="400"></canvas>
+          <div class="spore-game-stats">
+            <div class="spore-stat">
+              <div class="spore-stat-label">Score</div>
+              <div class="spore-stat-value" id="spore-score">0</div>
+            </div>
+            <div class="spore-stat">
+              <div class="spore-stat-label">Time</div>
+              <div class="spore-stat-value" id="spore-time">10</div>
+            </div>
+          </div>
+          <button id="spore-start-btn" class="spore-start-btn" onclick="client.closeSporeGame()">Close Game</button>
         </div>
 
         <!-- Quest Panel -->
