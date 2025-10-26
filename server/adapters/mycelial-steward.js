@@ -200,23 +200,54 @@ Always return valid JSON matching the output schema.`;
   }
 
   /**
+   * Strip code fences from text if present
+   * Returns { text, wasFenced }
+   */
+  stripCodeFences(text) {
+    if (!text) return { text: '', wasFenced: false };
+    
+    const trimmed = text.trim();
+    
+    // Check if starts with ``` (code fence)
+    if (trimmed.startsWith('```')) {
+      // Find first newline (end of language hint line)
+      const firstNewline = trimmed.indexOf('\n');
+      if (firstNewline === -1) return { text: trimmed, wasFenced: false };
+      
+      // Find closing ```
+      const closingFence = trimmed.lastIndexOf('```');
+      if (closingFence > firstNewline) {
+        // Extract content between fences
+        const content = trimmed.substring(firstNewline + 1, closingFence).trim();
+        return { text: content, wasFenced: true };
+      }
+    }
+    
+    return { text: trimmed, wasFenced: false };
+  }
+
+  /**
    * Try to extract JSON from text robustly
+   * Returns { json, wasFenced } or null
    */
   tryExtractJson(text) {
     if (!text) return null;
     
+    // Strip code fences if present
+    const { text: cleanText, wasFenced } = this.stripCodeFences(text);
+    
     // Try direct parse first
     try {
-      return JSON.parse(text);
+      return { json: JSON.parse(cleanText), wasFenced };
     } catch (e) {
       // Try extracting between first { and last }
-      const firstBrace = text.indexOf('{');
-      const lastBrace = text.lastIndexOf('}');
+      const firstBrace = cleanText.indexOf('{');
+      const lastBrace = cleanText.lastIndexOf('}');
       
       if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-        const jsonSubstr = text.substring(firstBrace, lastBrace + 1);
+        const jsonSubstr = cleanText.substring(firstBrace, lastBrace + 1);
         try {
-          return JSON.parse(jsonSubstr);
+          return { json: JSON.parse(jsonSubstr), wasFenced };
         } catch (e2) {
           return null;
         }
@@ -353,19 +384,24 @@ Always return valid JSON matching the output schema.`;
       }
       
       // Try to extract JSON
-      const parsedJson = this.tryExtractJson(assistantText);
+      const extractResult = this.tryExtractJson(assistantText);
       
-      if (!parsedJson) {
+      if (!extractResult) {
         this.lastError = "assistant content not JSON".substring(0, 200);
         this.healthy = false;
         console.warn(`[MycelialSteward:${requestId}] Assistant content not valid JSON, returning no-op patch`);
         return this.getNoOpPatch();
       }
       
+      // Update response preview to indicate if fenced
+      if (extractResult.wasFenced) {
+        this.lastResponsePreview = `[fenced] ${assistantText.substring(0, 380)}`;
+      }
+      
       // Success!
       this.healthy = true;
       this.lastError = null;
-      return parsedJson;
+      return extractResult.json;
       
     } catch (err) {
       // Capture error details with truncation
@@ -403,7 +439,7 @@ Always return valid JSON matching the output schema.`;
   }
 
   /**
-   * Normalize Letta patch with exact transformation rules
+   * Normalize Letta patch with exact transformation rules and alternate key support
    */
   normalizeLettaPatch(response, serverContext = {}) {
     try {
@@ -420,45 +456,75 @@ Always return valid JSON matching the output schema.`;
 
       const normalized = {};
 
-      // 1. CADENCE: add should_elder_speak if mode present; pass through question
+      // 1. CADENCE: Handle special quest threshold reasons
+      let cadenceReason = parsed.cadence?.trigger_reason || parsed.cadence?.triggerReason || parsed.cadence?.reason || null;
+      let questThresholdValue = null;
+      
+      // Map quest_percent_crossed_XX to "quest_threshold"
+      if (cadenceReason && cadenceReason.startsWith('quest_percent_crossed_')) {
+        const match = cadenceReason.match(/quest_percent_crossed_(\d+)/);
+        if (match) {
+          questThresholdValue = parseInt(match[1], 10);
+          cadenceReason = 'quest_threshold';
+        }
+      }
+      
       normalized.cadence = {
         shouldElderSpeak: parsed.cadence?.mode ? true : Boolean(parsed.cadence?.should_elder_speak || parsed.cadence?.shouldElderSpeak),
-        triggerReason: parsed.cadence?.trigger_reason || parsed.cadence?.triggerReason || null,
+        triggerReason: cadenceReason,
         mode: parsed.cadence?.mode || null,
         question: serverContext.question || parsed.cadence?.question || null
       };
 
-      // 2. VOTE: status "ACTIVE"→"OPEN"; ensure required fields
+      // 2. VOTE: Handle "tallies" → "tally" rename; status "ACTIVE"→"OPEN"
+      const voteData = parsed.vote || {};
+      const tally = voteData.tally || voteData.tallies || {};
+      
       normalized.vote = {
-        status: parsed.vote?.status === 'ACTIVE' ? 'OPEN' : (parsed.vote?.status || null),
-        close: Boolean(parsed.vote?.close),
-        tally: parsed.vote?.tally || {},
-        winner: parsed.vote?.winner || null,
-        close_reason: parsed.vote?.close_reason || parsed.vote?.closeReason || null,
-        decisionCard: parsed.vote?.decisionCard || parsed.vote?.decision_card || null
+        status: voteData.status === 'ACTIVE' ? 'OPEN' : (voteData.status || null),
+        close: Boolean(voteData.close),
+        tally,
+        winner: voteData.winner || null,
+        close_reason: voteData.close_reason || voteData.closeReason || null,
+        decisionCard: voteData.decisionCard || voteData.decision_card || null
       };
 
-      // 3. RESOURCES: needs object → array; threshold_crossed number → {threshold_crossed:bool, crossed_at:N}
-      const needs = parsed.resources?.needs || {};
+      // 3. RESOURCES: Handle misspellings, needs object → array, threshold_crossed coercion
+      const resourcesData = parsed.resources || {};
+      
+      // Handle needs: always coerce to array of {item, qty}
+      const needs = resourcesData.needs || {};
       const needsArray = Array.isArray(needs) ? needs : 
         Object.entries(needs).map(([item, qty]) => ({ item, qty }));
 
+      // Handle threshold_crossed with various key names and types
       let thresholdInfo = { threshold_crossed: false, crossed_at: null };
-      const tc = parsed.resources?.threshold_crossed;
+      
+      // Try various key names for threshold (handle misspellings)
+      const tc = resourcesData.threshold_crossed ?? 
+                 resourcesData.thresholdCrossed ?? 
+                 resourcesData.threshold_cross ?? 
+                 resourcesData.threshold;
+      
       if (typeof tc === 'number') {
         thresholdInfo = { threshold_crossed: true, crossed_at: tc };
       } else if (tc === true) {
-        thresholdInfo = { threshold_crossed: true, crossed_at: parsed.resources?.crossed_at || Date.now() };
+        thresholdInfo = { threshold_crossed: true, crossed_at: resourcesData.crossed_at || questThresholdValue || Date.now() };
       } else if (tc === false) {
         thresholdInfo = { threshold_crossed: false, crossed_at: null };
+      }
+      
+      // If cadence had quest_percent_crossed_XX, set threshold info
+      if (questThresholdValue !== null && !thresholdInfo.threshold_crossed) {
+        thresholdInfo = { threshold_crossed: true, crossed_at: questThresholdValue };
       }
 
       normalized.resources = {
         needs: needsArray,
         threshold_crossed: thresholdInfo.threshold_crossed,
         crossed_at: thresholdInfo.crossed_at,
-        stockpileDeltas: parsed.resources?.stockpileDeltas || parsed.resources?.stockpile_deltas || {},
-        questPercentDelta: Number(parsed.resources?.questPercentDelta || parsed.resources?.quest_percent_delta || 0)
+        stockpileDeltas: resourcesData.stockpileDeltas || resourcesData.stockpile_deltas || {},
+        questPercentDelta: Number(resourcesData.questPercentDelta || resourcesData.quest_percent_delta || 0)
       };
 
       // 4. TRADES: resolutions with status "COMPLETED" → actions; "FAILED" → empty + log
