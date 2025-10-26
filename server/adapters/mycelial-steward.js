@@ -270,183 +270,56 @@ Always return valid JSON matching the output schema.`;
   /**
    * Call Letta API via SDK with robust error handling and run polling
    */
-  async callLettaAPI(input, requestId) {
+    async callLettaAPI(input, requestId) {
     try {
-      // Get agent ID - will throw if missing
-      const agentId = getLettaAgentId();
-      
-      // Get SDK client - will throw if missing API key
-      const client = getLettaClient();
-      
-      // Build request body EXACTLY as Letta requires
-      const body = {
+        const agentId = getLettaAgentId();
+        const client = getLettaClient();
+        
+        const body = {
         messages: [
-          {
+            {
             role: "user",
             content: [
-              { 
-                type: "text", 
-                text: "Return ONLY a single JSON object per the schema you were configured with. No prose." 
-              },
-              { 
-                type: "text", 
-                text: JSON.stringify(input) 
-              }
+                { type: "text", text: "Return ONLY a single JSON object per the schema you were configured with. No prose." },
+                { type: "text", text: JSON.stringify(input) }
             ]
-          }
-        ]
-      };
-      
-      // Store last request preview (first 300 chars)
-      const bodyStr = JSON.stringify(body);
-      this.lastRequest = {
-        agentId,
-        bodyPreview: bodyStr.substring(0, 300)
-      };
-      
-      // Call SDK to send message
-      console.log(`[MycelialSteward:${requestId}] Calling agents.messages.create`);
-      const response = await client.agents.messages.create(agentId, body);
-      
-      // Attempt to extract assistant text in priority order
-      let assistantText = null;
-      
-      // a) res.message?.content
-      if (response.message?.content) {
-        assistantText = this.extractTextFromMessageContent(response.message.content);
-        if (assistantText) {
-          console.log(`[MycelialSteward:${requestId}] Found assistant text in response.message.content`);
-        }
-      }
-      
-      // b) res.messages?.filter(m => m.role==='assistant').pop()?.content
-      if (!assistantText && response.messages && response.messages.length > 0) {
+            }
+        ],
+        stream: false // ADD THIS LINE - tells Letta to wait for complete response
+        };
+        
+        console.log(`[MycelialSteward:${requestId}] Calling agents.messages.create with stream=false`);
+        const response = await client.agents.messages.create(agentId, body);
+        
+        // Response should now contain complete message immediately
+        let assistantText = null;
+        
+        if (response.messages && response.messages.length > 0) {
         const assistantMsgs = response.messages.filter(m => m.role === 'assistant');
         if (assistantMsgs.length > 0) {
-          assistantText = this.extractTextFromMessageContent(assistantMsgs[assistantMsgs.length - 1].content);
-          if (assistantText) {
-            console.log(`[MycelialSteward:${requestId}] Found assistant text in response.messages`);
-          }
+            assistantText = this.extractTextFromMessageContent(assistantMsgs[assistantMsgs.length - 1].content);
         }
-      }
-      
-      // c) res.messages?.filter(m => m.messageType==='assistant_message').pop()?.content
-      if (!assistantText && response.messages && response.messages.length > 0) {
-        const assistantMsgs = response.messages.filter(m => m.messageType === 'assistant_message');
-        if (assistantMsgs.length > 0) {
-          assistantText = this.extractTextFromMessageContent(assistantMsgs[assistantMsgs.length - 1].content);
-          if (assistantText) {
-            console.log(`[MycelialSteward:${requestId}] Found assistant text in messageType==='assistant_message'`);
-          }
         }
-      }
-      
-      // If no assistant text found and res.runId exists, poll for run completion
-      if (!assistantText && response.runId) {
-        console.log(`[MycelialSteward:${requestId}] No assistant text in immediate response, polling run ${response.runId}`);
         
-        const { status, run } = await this.waitForRunCompletion(client, response.runId);
-        this.lastRun = { runId: response.runId, polledStatus: status };
-        
-        if (status === 'completed' && run) {
-          console.log(`[MycelialSteward:${requestId}] Run completed, fetching messages`);
-          
-          // Fetch run messages
-          try {
-            const runMessages = await client.runs.messages.list(response.runId);
-            
-            if (runMessages && runMessages.length > 0) {
-              // Find last assistant message
-              for (let i = runMessages.length - 1; i >= 0; i--) {
-                const msg = runMessages[i];
-                if (msg.role === 'assistant' || msg.messageType === 'assistant_message') {
-                  assistantText = this.extractTextFromMessageContent(msg.content);
-                  if (assistantText) {
-                    console.log(`[MycelialSteward:${requestId}] Found assistant text in run messages`);
-                    break;
-                  }
-                }
-              }
-            }
-          } catch (msgErr) {
-            console.warn(`[MycelialSteward:${requestId}] Error fetching run messages: ${msgErr.message}`);
-          }
-        } else {
-          console.warn(`[MycelialSteward:${requestId}] Run polling failed with status: ${status}`);
+        // No polling needed!
+        if (!assistantText) {
+        console.warn(`[MycelialSteward:${requestId}] No assistant content, returning no-op`);
+        return this.getNoOpPatch();
         }
-      }
-      
-      // Store response preview
-      if (assistantText) {
-        this.lastResponsePreview = assistantText.substring(0, 400);
-      } else {
-        // Build summary of what we saw
-        const msgTypes = response.messages?.map(m => m.role || m.messageType).join(', ') || 'none';
-        this.lastResponsePreview = `messages[${response.messages?.length || 0}] types: ${msgTypes}${response.runId ? `, runId: ${response.runId}` : ''}`;
-      }
-      
-      // If still no assistant text, return no-op
-      if (!assistantText) {
-        this.lastError = "no assistant content".substring(0, 200);
-        this.healthy = false;
-        console.warn(`[MycelialSteward:${requestId}] No assistant content found, returning no-op patch`);
+        
+        const extractResult = this.tryExtractJson(assistantText);
+        if (!extractResult) {
+        console.warn(`[MycelialSteward:${requestId}] Invalid JSON, returning no-op`);
         return this.getNoOpPatch();
-      }
-      
-      // Try to extract JSON
-      const extractResult = this.tryExtractJson(assistantText);
-      
-      if (!extractResult) {
-        this.lastError = "assistant content not JSON".substring(0, 200);
-        this.healthy = false;
-        console.warn(`[MycelialSteward:${requestId}] Assistant content not valid JSON, returning no-op patch`);
-        return this.getNoOpPatch();
-      }
-      
-      // Update response preview to indicate if fenced
-      if (extractResult.wasFenced) {
-        this.lastResponsePreview = `[fenced] ${assistantText.substring(0, 380)}`;
-      }
-      
-      // Success!
-      this.healthy = true;
-      this.lastError = null;
-      return extractResult.json;
-      
+        }
+        
+        return extractResult.json;
+        
     } catch (err) {
-      // Capture error details with truncation
-      let errorDetails = String(err);
-      if (err.body) {
-        const bodyStr = typeof err.body === 'string' ? err.body : JSON.stringify(err.body);
-        errorDetails = bodyStr.substring(0, 200);
-      } else if (err.message) {
-        errorDetails = err.message.substring(0, 200);
-      }
-      
-      this.lastError = errorDetails;
-      this.healthy = false;
-      
-      // Robust error formatting based on error type
-      if (err.name === 'LettaError' || err.constructor.name === 'LettaError') {
-        console.error(`[MycelialSteward:${requestId}] LettaError`, {
-          status: err.statusCode || err.status,
-          message: err.message,
-          body: err.body
-        });
-      } else if (err.message && (err.message.includes('LETTA_API_KEY') || err.message.includes('LETTA_AGENT_ID'))) {
-        // Configuration error
-        console.error(`[MycelialSteward:${requestId}] ConfigError`, {
-          message: err.message
-        });
-      } else {
-        // Network or other error
-        console.error(`[MycelialSteward:${requestId}] NetworkError`, {
-          message: String(err)
-        });
-      }
-      throw err;
+        console.error(`[MycelialSteward:${requestId}] Error: ${err.message}`);
+        throw err;
     }
-  }
+    }
 
   /**
    * Normalize Letta patch with exact transformation rules and alternate key support
