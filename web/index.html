@@ -67,7 +67,7 @@
                 <span class="item-qty" id="inv-moss">0</span>
               </div>
               <div class="item-actions">
-                <button class="pixel-btn gather-btn" onclick="client.quickGather('moss')">Gather</button>
+                <button class="pixel-btn gather-btn" onclick="client.startMossGame()">Play Game</button>
                 <button class="pixel-btn donate-btn" onclick="client.quickDonate('moss')">Donate</button>
               </div>
             </div>
@@ -78,7 +78,7 @@
                 <span class="item-qty" id="inv-cedar">0</span>
               </div>
               <div class="item-actions">
-                <button class="pixel-btn gather-btn" onclick="client.quickGather('cedar')">Gather</button>
+                <button class="pixel-btn gather-btn" onclick="client.startCedarGame()">Play Game</button>
                 <button class="pixel-btn donate-btn" onclick="client.quickDonate('cedar')">Donate</button>
               </div>
             </div>
@@ -89,7 +89,7 @@
                 <span class="item-qty" id="inv-resin">0</span>
               </div>
               <div class="item-actions">
-                <button class="pixel-btn gather-btn" onclick="client.quickGather('resin')">Gather</button>
+                <button class="pixel-btn gather-btn" onclick="client.startResinGame()">Play Game</button>
                 <button class="pixel-btn donate-btn" onclick="client.quickDonate('resin')">Donate</button>
               </div>
             </div>
@@ -122,6 +122,63 @@
             </div>
           </div>
           <button id="spore-start-btn" class="spore-start-btn" onclick="client.closeSporeGame()">Close Game</button>
+        </div>
+
+        <!-- Moss Matcher Minigame Panel -->
+        <div class="panel moss-game-container" id="moss-game-panel" style="display: none;">
+          <h3>🌿 Moss Matcher</h3>
+          <div id="moss-game-grid" class="moss-game-grid"></div>
+          <div class="spore-game-stats">
+            <div class="spore-stat">
+              <div class="spore-stat-label">Matches</div>
+              <div class="spore-stat-value" id="moss-score">0</div>
+            </div>
+            <div class="spore-stat">
+              <div class="spore-stat-label">Time</div>
+              <div class="spore-stat-value" id="moss-time">30</div>
+            </div>
+          </div>
+          <button class="spore-start-btn" onclick="client.closeMossGame()">Close Game</button>
+        </div>
+
+        <!-- Cedar Chop Minigame Panel -->
+        <div class="panel cedar-game-container" id="cedar-game-panel" style="display: none;">
+          <h3>🪵 Timber Chop</h3>
+          <canvas id="cedar-canvas" class="spore-game-canvas" width="300" height="400"></canvas>
+          <div class="spore-game-stats">
+            <div class="spore-stat">
+              <div class="spore-stat-label">Chops</div>
+              <div class="spore-stat-value" id="cedar-chops">0/10</div>
+            </div>
+            <div class="spore-stat">
+              <div class="spore-stat-label">Accuracy</div>
+              <div class="spore-stat-value" id="cedar-accuracy">0%</div>
+            </div>
+          </div>
+          <button class="spore-start-btn" onclick="client.closeCedarGame()">Close Game</button>
+        </div>
+
+        <!-- Resin Flow Minigame Panel -->
+        <div class="panel resin-game-container" id="resin-game-panel" style="display: none;">
+          <h3>💧 Resin Flow</h3>
+          <canvas id="resin-canvas" class="spore-game-canvas" width="300" height="400"></canvas>
+          <div class="spore-game-stats">
+            <div class="spore-stat">
+              <div class="spore-stat-label">Accuracy</div>
+              <div class="spore-stat-value" id="resin-accuracy">0%</div>
+            </div>
+            <div class="spore-stat">
+              <div class="spore-stat-label">Time</div>
+              <div class="spore-stat-value" id="resin-time">15</div>
+            </div>
+          </div>
+          <button class="spore-start-btn" onclick="client.closeResinGame()">Close Game</button>
+        </div>
+
+        <!-- Village Map Panel -->
+        <div class="panel village-map-panel">
+          <h3>🗺️ Village Map</h3>
+          <canvas id="village-map-canvas" class="village-map-canvas" width="600" height="400"></canvas>
         </div>
 
         <!-- Quest Panel -->

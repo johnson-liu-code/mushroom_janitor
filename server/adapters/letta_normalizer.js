@@ -15,7 +15,7 @@
  * @returns {Object} Normalized patch with all seven sections
  */
 export default function normalizeLettaPatch(raw, tickContext = {}) {
-  // Start with safe skeleton - all seven sections present with defaults
+  // Start with safe skeleton - all sections present with defaults
   const normalized = {
     cadence: {
       should_elder_speak: false,
@@ -50,7 +50,8 @@ export default function normalizeLettaPatch(raw, tickContext = {}) {
       rate_limits: [],
       notes_for_elder: null
     },
-    elder_message: null
+    elder_message: null,
+    locations: []
   };
 
   // Parse raw if string
@@ -237,6 +238,18 @@ export default function normalizeLettaPatch(raw, tickContext = {}) {
       referenced_stones: Array.isArray(em.referenced_stones) ? em.referenced_stones.map(String) : [],
       acknowledged_users: Array.isArray(em.acknowledged_users) ? em.acknowledged_users.map(String) : []
     };
+  }
+
+  // 8. LOCATIONS (for village map)
+  // Letta can optionally provide new village locations
+  if (parsed.locations && Array.isArray(parsed.locations)) {
+    normalized.locations = parsed.locations.map(loc => ({
+      name: String(loc.name || ''),
+      x: Number(loc.x || 0),
+      y: Number(loc.y || 0),
+      type: String(loc.type || 'custom'),
+      icon: String(loc.icon || '📍')
+    }));
   }
 
   return normalized;

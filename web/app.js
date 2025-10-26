@@ -271,6 +271,7 @@ class MushroomVillageClient {
     if (data.vote) this.updateVote(data.vote);
     if (data.stockpile) this.updateStockpile(data.stockpile);
     if (data.trades) this.updateTrades(data.trades);
+    if (data.locations) this.updateMapLocations(data.locations);
   }
 
   // Quick action methods for UI buttons with cooldowns
@@ -799,7 +800,581 @@ class MushroomVillageClient {
     
     document.getElementById('spore-game-panel').style.display = 'none';
   }
+
+  // MOSS MATCHER GAME
+  startMossGame() {
+    if (this.isCooldown('moss')) return;
+    
+    document.getElementById('moss-game-panel').style.display = 'block';
+    
+    const mossTypes = ['🌿', '🍀', '🌱', '🪴', '🌾', '🍃'];
+    const cards = [];
+    
+    // Create 6 pairs
+    for (let i = 0; i < 6; i++) {
+      cards.push(mossTypes[i], mossTypes[i]);
+    }
+    
+    // Shuffle
+    for (let i = cards.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [cards[i], cards[j]] = [cards[j], cards[i]];
+    }
+    
+    this.mossGame = {
+      cards,
+      flipped: [],
+      matched: [],
+      score: 0,
+      timeLeft: 30,
+      isRunning: true
+    };
+    
+    this.renderMossGrid();
+    this.runMossTimer();
+  }
+
+  renderMossGrid() {
+    const grid = document.getElementById('moss-game-grid');
+    grid.innerHTML = '';
+    
+    this.mossGame.cards.forEach((moss, index) => {
+      const card = document.createElement('div');
+      card.className = 'moss-card';
+      card.dataset.index = index;
+      
+      const back = document.createElement('div');
+      back.className = 'moss-card-back';
+      back.textContent = '🌿';
+      
+      const front = document.createElement('div');
+      front.textContent = moss;
+      
+      card.appendChild(back);
+      card.appendChild(front);
+      card.onclick = () => this.flipMossCard(index);
+      
+      grid.appendChild(card);
+    });
+  }
+
+  flipMossCard(index) {
+    const game = this.mossGame;
+    if (!game.isRunning || game.flipped.length >= 2 || 
+        game.flipped.includes(index) || game.matched.includes(index)) {
+      return;
+    }
+    
+    game.flipped.push(index);
+    const card = document.querySelector(`.moss-card[data-index="${index}"]`);
+    card.classList.add('flipped');
+    
+    if (game.flipped.length === 2) {
+      const [first, second] = game.flipped;
+      if (game.cards[first] === game.cards[second]) {
+        // Match!
+        game.matched.push(first, second);
+        game.score++;
+        document.getElementById('moss-score').textContent = game.score;
+        
+        setTimeout(() => {
+          document.querySelectorAll('.moss-card.flipped').forEach(c => {
+            if (!c.classList.contains('matched')) c.classList.add('matched');
+          });
+          game.flipped = [];
+          
+          if (game.matched.length === game.cards.length) {
+            this.endMossGame();
+          }
+        }, 500);
+      } else {
+        // No match
+        setTimeout(() => {
+          game.flipped.forEach(i => {
+            document.querySelector(`.moss-card[data-index="${i}"]`).classList.remove('flipped');
+          });
+          game.flipped = [];
+        }, 1000);
+      }
+    }
+  }
+
+  runMossTimer() {
+    const interval = setInterval(() => {
+      if (!this.mossGame.isRunning) {
+        clearInterval(interval);
+        return;
+      }
+      
+      this.mossGame.timeLeft--;
+      document.getElementById('moss-time').textContent = this.mossGame.timeLeft;
+      
+      if (this.mossGame.timeLeft <= 0) {
+        this.endMossGame();
+        clearInterval(interval);
+      }
+    }, 1000);
+  }
+
+  endMossGame() {
+    this.mossGame.isRunning = false;
+    
+    if (this.mossGame.score > 0) {
+      this.send({
+        type: 'USER_CHAT',
+        text: `/contribute moss x${this.mossGame.score * 2}`
+      });
+    }
+    
+    this.startCooldown('moss');
+  }
+
+  closeMossGame() {
+    if (this.mossGame && this.mossGame.isRunning) {
+      this.endMossGame();
+    }
+    document.getElementById('moss-game-panel').style.display = 'none';
+  }
+
+  // CEDAR CHOP GAME
+  startCedarGame() {
+    if (this.isCooldown('cedar')) return;
+    
+    document.getElementById('cedar-game-panel').style.display = 'block';
+    
+    this.cedarGame = {
+      canvas: document.getElementById('cedar-canvas'),
+      ctx: null,
+      chops: 0,
+      totalChops: 10,
+      hits: 0,
+      targetPos: 0.5,
+      indicatorPos: 0,
+      direction: 1,
+      speed: 0.02,
+      isRunning: true,
+      waiting: true
+    };
+    
+    this.cedarGame.ctx = this.cedarGame.canvas.getContext('2d');
+    const rect = this.cedarGame.canvas.getBoundingClientRect();
+    this.cedarGame.canvas.width = rect.width;
+    this.cedarGame.canvas.height = rect.height;
+    
+    // Click handler
+    this.cedarGame.canvas.onclick = () => this.chopCedar();
+    
+    // Start animation
+    this.animateCedarChop();
+  }
+
+  animateCedarChop() {
+    const game = this.cedarGame;
+    if (!game.isRunning) return;
+    
+    const ctx = game.ctx;
+    const w = game.canvas.width;
+    const h = game.canvas.height;
+    
+    // Clear
+    ctx.fillStyle = '#FAFAF8';
+    ctx.fillRect(0, 0, w, h);
+    
+    // Draw tree
+    ctx.fillStyle = '#8B7355';
+    ctx.fillRect(w/2 - 30, h/2 - 100, 60, 200);
+    
+    // Draw bar
+    const barY = h/2 + 120;
+    const barHeight = 40;
+    ctx.fillStyle = '#E0E0E0';
+    ctx.fillRect(50, barY, w - 100, barHeight);
+    
+    // Draw target zone
+    const targetX = 50 + (w - 100) * game.targetPos;
+    ctx.fillStyle = 'rgba(122, 155, 118, 0.3)';
+    ctx.fillRect(targetX - 30, barY, 60, barHeight);
+    
+    // Draw indicator
+    if (game.waiting) {
+      game.indicatorPos += game.speed * game.direction;
+      if (game.indicatorPos >= 1 || game.indicatorPos <= 0) {
+        game.direction *= -1;
+      }
+    }
+    
+    const indicatorX = 50 + (w - 100) * game.indicatorPos;
+    ctx.fillStyle = '#7A9B76';
+    ctx.fillRect(indicatorX - 5, barY - 10, 10, barHeight + 20);
+    
+    // Draw instructions
+    ctx.fillStyle = '#3A3A3A';
+    ctx.font = '16px Nunito';
+    ctx.textAlign = 'center';
+    ctx.fillText('Click when indicator is in green zone!', w/2, 50);
+    
+    requestAnimationFrame(() => this.animateCedarChop());
+  }
+
+  chopCedar() {
+    const game = this.cedarGame;
+    if (!game.waiting || !game.isRunning) return;
+    
+    game.waiting = false;
+    game.chops++;
+    
+    // Check accuracy
+    const distance = Math.abs(game.indicatorPos - game.targetPos);
+    const isHit = distance < 0.15;
+    
+    if (isHit) game.hits++;
+    
+    const accuracy = Math.round((game.hits / game.chops) * 100);
+    document.getElementById('cedar-chops').textContent = `${game.chops}/10`;
+    document.getElementById('cedar-accuracy').textContent = `${accuracy}%`;
+    
+    if (game.chops >= game.totalChops) {
+      this.endCedarGame();
+    } else {
+      // Reset for next chop
+      setTimeout(() => {
+        game.waiting = true;
+        game.targetPos = 0.2 + Math.random() * 0.6;
+        game.speed = 0.015 + Math.random() * 0.015;
+      }, 500);
+    }
+  }
+
+  endCedarGame() {
+    this.cedarGame.isRunning = false;
+    const yield_amt = Math.max(1, Math.round(this.cedarGame.hits * 1.5));
+    
+    if (yield_amt > 0) {
+      this.send({
+        type: 'USER_CHAT',
+        text: `/contribute cedar x${yield_amt}`
+      });
+    }
+    
+    this.startCooldown('cedar');
+  }
+
+  closeCedarGame() {
+    if (this.cedarGame && this.cedarGame.isRunning) {
+      this.endCedarGame();
+    }
+    document.getElementById('cedar-game-panel').style.display = 'none';
+  }
+
+  // RESIN FLOW GAME
+  startResinGame() {
+    if (this.isCooldown('resin')) return;
+    
+    document.getElementById('resin-game-panel').style.display = 'block';
+    
+    this.resinGame = {
+      canvas: document.getElementById('resin-canvas'),
+      ctx: null,
+      paths: [],
+      timeLeft: 15,
+      score: 0,
+      totalDistance: 0,
+      tracedDistance: 0,
+      isRunning: true,
+      isDrawing: false,
+      lastPos: null
+    };
+    
+    this.resinGame.ctx = this.resinGame.canvas.getContext('2d');
+    const rect = this.resinGame.canvas.getBoundingClientRect();
+    this.resinGame.canvas.width = rect.width;
+    this.resinGame.canvas.height = rect.height;
+    
+    // Generate paths
+    this.generateResinPaths();
+    
+    // Mouse handlers
+    this.resinGame.canvas.onmousedown = (e) => this.startResinTrace(e);
+    this.resinGame.canvas.onmousemove = (e) => this.continueResinTrace(e);
+    this.resinGame.canvas.onmouseup = () => this.endResinTrace();
+    
+    // Timer
+    const interval = setInterval(() => {
+      if (!this.resinGame.isRunning) {
+        clearInterval(interval);
+        return;
+      }
+      
+      this.resinGame.timeLeft--;
+      document.getElementById('resin-time').textContent = this.resinGame.timeLeft;
+      
+      if (this.resinGame.timeLeft <= 0) {
+        this.endResinGame();
+        clearInterval(interval);
+      }
+    }, 1000);
+    
+    this.animateResinFlow();
+  }
+
+  generateResinPaths() {
+    const game = this.resinGame;
+    const w = game.canvas.width;
+    const h = game.canvas.height;
+    
+    // Create 3 flowing paths
+    for (let i = 0; i < 3; i++) {
+      const path = [];
+      const startX = (w / 4) * (i + 1);
+      let x = startX;
+      let y = 50;
+      
+      while (y < h - 50) {
+        path.push({x, y});
+        y += 20 + Math.random() * 20;
+        x += (Math.random() - 0.5) * 40;
+        x = Math.max(20, Math.min(w - 20, x));
+      }
+      
+      game.paths.push({points: path, traced: []});
+      
+      // Calculate total distance
+      for (let j = 1; j < path.length; j++) {
+        const dx = path[j].x - path[j-1].x;
+        const dy = path[j].y - path[j-1].y;
+        game.totalDistance += Math.sqrt(dx*dx + dy*dy);
+      }
+    }
+  }
+
+  animateResinFlow() {
+    const game = this.resinGame;
+    if (!game.isRunning) return;
+    
+    const ctx = game.ctx;
+    ctx.fillStyle = '#FAFAF8';
+    ctx.fillRect(0, 0, game.canvas.width, game.canvas.height);
+    
+    // Draw paths
+    game.paths.forEach(path => {
+      ctx.strokeStyle = '#E8B869';
+      ctx.lineWidth = 6;
+      ctx.lineCap = 'round';
+      ctx.globalAlpha = 0.3;
+      
+      ctx.beginPath();
+      path.points.forEach((p, i) => {
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+      
+      // Draw traced portions
+      ctx.strokeStyle = '#7A9B76';
+      ctx.globalAlpha = 0.8;
+      path.traced.forEach(segment => {
+        ctx.beginPath();
+        ctx.moveTo(segment.from.x, segment.from.y);
+        ctx.lineTo(segment.to.x, segment.to.y);
+        ctx.stroke();
+      });
+    });
+    
+    ctx.globalAlpha = 1;
+    
+    requestAnimationFrame(() => this.animateResinFlow());
+  }
+
+  startResinTrace(e) {
+    const rect = this.resinGame.canvas.getBoundingClientRect();
+    this.resinGame.isDrawing = true;
+    this.resinGame.lastPos = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    };
+  }
+
+  continueResinTrace(e) {
+    const game = this.resinGame;
+    if (!game.isDrawing || !game.isRunning) return;
+    
+    const rect = game.canvas.getBoundingClientRect();
+    const pos = {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    };
+    
+    // Check if near any path
+    game.paths.forEach(path => {
+      path.points.forEach((point, i) => {
+        const dx = pos.x - point.x;
+        const dy = pos.y - point.y;
+        const distance = Math.sqrt(dx*dx + dy*dy);
+        
+        if (distance < 15 && game.lastPos) {
+          const segment = {from: {...game.lastPos}, to: {...pos}};
+          path.traced.push(segment);
+          
+          const segDist = Math.sqrt((pos.x - game.lastPos.x)**2 + (pos.y - game.lastPos.y)**2);
+          game.tracedDistance += segDist;
+        }
+      });
+    });
+    
+    game.lastPos = pos;
+    
+    // Update accuracy
+    const accuracy = Math.min(100, Math.round((game.tracedDistance / game.totalDistance) * 100));
+    document.getElementById('resin-accuracy').textContent = `${accuracy}%`;
+  }
+
+  endResinTrace() {
+    this.resinGame.isDrawing = false;
+    this.resinGame.lastPos = null;
+  }
+
+  endResinGame() {
+    this.resinGame.isRunning = false;
+    const accuracy = Math.min(100, Math.round((this.resinGame.tracedDistance / this.resinGame.totalDistance) * 100));
+    const yield_amt = Math.max(1, Math.round(accuracy / 10));
+    
+    if (yield_amt > 0) {
+      this.send({
+        type: 'USER_CHAT',
+        text: `/contribute resin x${yield_amt}`
+      });
+    }
+    
+    this.startCooldown('resin');
+  }
+
+  closeResinGame() {
+    if (this.resinGame && this.resinGame.isRunning) {
+      this.endResinGame();
+    }
+    document.getElementById('resin-game-panel').style.display = 'none';
+  }
+
+  // VILLAGE MAP
+  initVillageMap() {
+    this.villageMap = {
+      canvas: document.getElementById('village-map-canvas'),
+      ctx: null,
+      locations: [
+        {name: "Elder's Grove", x: 300, y: 200, type: 'elder', icon: '🍄'},
+        {name: 'Moss Garden', x: 100, y: 100, type: 'resource', icon: '🌿'},
+        {name: 'Cedar Forest', x: 500, y: 100, type: 'resource', icon: '🪵'},
+        {name: 'Resin Trees', x: 100, y: 300, type: 'resource', icon: '💧'},
+        {name: 'Stockpile', x: 300, y: 350, type: 'stockpile', icon: '📦'},
+        {name: 'Trading Post', x: 500, y: 250, type: 'trade', icon: '🤝'},
+        {name: 'Memory Stones', x: 50, y: 200, type: 'stones', icon: '🪨'}
+      ],
+      players: []
+    };
+    
+    const rect = this.villageMap.canvas.getBoundingClientRect();
+    this.villageMap.canvas.width = rect.width;
+    this.villageMap.canvas.height = rect.height;
+    this.villageMap.ctx = this.villageMap.canvas.getContext('2d');
+    
+    this.renderVillageMap();
+  }
+
+  renderVillageMap() {
+    if (!this.villageMap) return;
+    
+    const ctx = this.villageMap.ctx;
+    const w = this.villageMap.canvas.width;
+    const h = this.villageMap.canvas.height;
+    
+    // Clear
+    ctx.fillStyle = '#FAF8F5';
+    ctx.fillRect(0, 0, w, h);
+    
+    // Draw paths between locations
+    ctx.strokeStyle = '#D4C4B0';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    
+    const grove = this.villageMap.locations[0];
+    this.villageMap.locations.slice(1).forEach(loc => {
+      ctx.beginPath();
+      ctx.moveTo(grove.x, grove.y);
+      ctx.lineTo(loc.x, loc.y);
+      ctx.stroke();
+    });
+    
+    ctx.setLineDash([]);
+    
+    // Draw locations
+    this.villageMap.locations.forEach(loc => {
+      // Shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.1)';
+      ctx.beginPath();
+      ctx.arc(loc.x + 2, loc.y + 2, 20, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Background
+      ctx.fillStyle = loc.type === 'elder' ? '#9B7FA8' : '#7A9B76';
+      ctx.beginPath();
+      ctx.arc(loc.x, loc.y, 20, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Icon
+      ctx.font = '20px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(loc.icon, loc.x, loc.y);
+      
+      // Label
+      ctx.fillStyle = '#3A3A3A';
+      ctx.font = '12px Quicksand';
+      ctx.fillText(loc.name, loc.x, loc.y + 35);
+    });
+    
+    // Draw players
+    this.villageMap.players.forEach(player => {
+      ctx.fillStyle = player.color || '#D4A574';
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, 8, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      
+      // Player name
+      ctx.fillStyle = '#3A3A3A';
+      ctx.font = '10px Nunito';
+      ctx.fillText(player.name, player.x, player.y - 15);
+    });
+  }
+
+  updateMapLocations(locations) {
+    if (!this.villageMap) this.initVillageMap();
+    
+    if (locations && locations.length > 0) {
+      // Add new locations from Letta
+      locations.forEach(newLoc => {
+        const exists = this.villageMap.locations.find(l => l.name === newLoc.name);
+        if (!exists) {
+          this.villageMap.locations.push(newLoc);
+        }
+      });
+      
+      this.renderVillageMap();
+    }
+  }
 }
 
 // Initialize client
 const client = new MushroomVillageClient();
+
+// Initialize village map on load
+window.addEventListener('load', () => {
+  if (client.villageMap) {
+    client.initVillageMap();
+  } else {
+    setTimeout(() => client.initVillageMap(), 100);
+  }
+});
