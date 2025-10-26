@@ -23,6 +23,10 @@ import { adminTools } from './admin.js';
 import { janitorAdapter } from './adapters/janitor.js';
 import { lettaAdapter } from './adapters/letta.js';
 import { mycelialSteward } from './adapters/mycelial-steward.js';
+import normalizeLettaPatch from './adapters/letta_normalizer.js';
+import { applyPatch } from './engine/apply_patch.js';
+import { buildElderInput } from './engine/build_elder_input.js';
+import { speakNPC, getStatus as getElderStatus } from './adapters/elder_adapter.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -67,7 +71,8 @@ const server = createServer((req, res) => {
       },
       adapters: {
         letta: mycelialSteward.getStatus(),
-        janitor: janitorAdapter.getStatus()
+        janitor: janitorAdapter.getStatus(),
+        elder: getElderStatus()
       },
       game: {
         players: gameState.players.size,
@@ -535,116 +540,101 @@ async function serverTick() {
 
     console.log(`[${tickId}] Starting server tick - stones: ${payload.memoryStones.length}, players: ${payload.players.length}`);
 
-    // Call sendTick to get patch
-    const patch = await mycelialSteward.sendTick(payload);
+    // Call sendTick to get raw patch
+    const rawPatch = await mycelialSteward.sendTick(payload);
 
-    // Apply patch operations in order
-
-    // 1. TRADES: Cancel/resolve offers
-    if (patch.trades.cancel.length > 0) {
-      console.log(`[${tickId}] Cancelling ${patch.trades.cancel.length} stale offers`);
-      for (const offerId of patch.trades.cancel) {
-        const offer = gameState.getOffer(offerId);
-        if (offer) {
-          offer.status = 'CANCELLED';
-        }
-      }
-      broadcast(createMessage(MessageType.TRADE_STATUS, {
-        offers: sporocarpBroker.getOpenOffers()
-      }));
-    }
-
-    if (patch.trades.resolve.length > 0) {
-      console.log(`[${tickId}] Resolving ${patch.trades.resolve.length} trades`);
-    }
-
-    // 2. VOTE: Close if needed
-    if (patch.vote.close && gameState.nowRing.activeVote) {
-      const vote = gameState.nowRing.activeVote;
-      const result = await lamellaTallykeeper.closeVote();
-      if (result) {
-        console.log(`[${tickId}] Vote closed: "${vote.topic}" - Winner: ${result.winner}`);
-        broadcast(createMessage(MessageType.VOTE_STATUS, {
-          vote: result.vote,
-          decisionCard: patch.vote.decisionCard || result.decisionCard
-        }));
-      }
-    }
-
-    // 3. RESOURCES: Update quest progress
-    if (patch.resources.questPercentDelta !== 0 && gameState.nowRing.activeQuest) {
-      const oldPercent = gameState.nowRing.activeQuest.percent || 0;
-      const newPercent = Math.min(100, Math.max(0, oldPercent + patch.resources.questPercentDelta));
-      gameState.nowRing.activeQuest.percent = newPercent;
-      
-      // Log quest threshold crossings
-      const thresholds = [25, 50, 75, 100];
-      for (const threshold of thresholds) {
-        if (oldPercent < threshold && newPercent >= threshold) {
-          console.log(`[${tickId}] Quest threshold reached: ${threshold}% - "${gameState.nowRing.activeQuest.name}"`);
-        }
-      }
-      
-      broadcast(createMessage(MessageType.QUEST_STATUS, {
-        quest: gameState.nowRing.activeQuest,
-        stockpile: gameState.stockpile
-      }));
-    }
-
-    // 4. ARCHIVE: Promote journals and prune stones
-    const stonesBefore = gameState.canonRing.length;
+    // Build tick context for normalizer
+    const tickContext = {
+      distilledQuestion: null,
+      journalsById: {}
+    };
     
-    for (const journalId of patch.archive.promoteJournals) {
-      await lichenArchivist.promoteToStone(journalId);
+    // Build journals lookup map
+    const pendingJournals = lichenArchivist.getPendingJournals();
+    for (const journal of pendingJournals) {
+      tickContext.journalsById[journal.id] = journal;
     }
+
+    // Normalize patch
+    const patch = normalizeLettaPatch(rawPatch, tickContext);
+
+    // Apply patch to state
+    const log = {
+      warn: (msg) => console.warn(`[${tickId}] ${msg}`),
+      info: (msg) => console.log(`[${tickId}] ${msg}`)
+    };
     
-    for (const stoneId of patch.archive.pruneStones) {
-      const index = gameState.canonRing.findIndex(s => s.id === stoneId);
-      if (index !== -1) {
-        gameState.canonRing.splice(index, 1);
-      }
-    }
+    applyPatch(gameState, patch, { log });
 
-    const stonesAfter = gameState.canonRing.length;
-    if (stonesBefore !== stonesAfter) {
-      console.log(`[${tickId}] Stone count changed: ${stonesBefore} → ${stonesAfter} (promoted: ${patch.archive.promoteJournals.length}, pruned: ${patch.archive.pruneStones.length})`);
-      broadcast(createMessage(MessageType.STATE_UPDATE, {
-        stones: gameState.getMemoryStones()
-      }));
-    }
+    // Broadcast state updates after patch application
+    broadcast(createMessage(MessageType.STATE_UPDATE, {
+      stones: gameState.getMemoryStones(),
+      quest: rhizomorphQuartermaster.getQuestStatus(),
+      vote: lamellaTallykeeper.getVoteStatus(),
+      stockpile: gameState.stockpile,
+      trades: sporocarpBroker.getOpenOffers()
+    }));
 
-    // 5. SAFETY: Issue warnings
-    if (patch.safety.warnings.length > 0) {
-      console.log(`[${tickId}] Safety warnings issued: ${patch.safety.warnings.length}`);
-    }
-
-    // 6. CADENCE: Trigger Elder if needed
-    if (patch.cadence.shouldElderSpeak) {
+    // CADENCE: Trigger Elder if needed
+    if (patch.cadence.should_elder_speak) {
       const requestId = `elder_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
-      console.log(`[${tickId}] Cadence triggered: ${patch.cadence.triggerReason}`);
-      console.log(`[Janitor:${requestId}] Composing Elder input bundle`);
+      console.log(`[${tickId}] Cadence triggered: ${patch.cadence.reason}`);
+      console.log(`[Elder:${requestId}] Building Elder input bundle`);
       
-      const context = gameState.getElderContext();
-      const elderPrompt = `TRIGGER: ${patch.cadence.triggerReason}\n` +
-        `Recent activity: ${gameState.messagesSinceLastPulse} messages since last pulse.\n` +
-        `Quest: ${context.activeQuest?.name || 'none'} (${context.activeQuest?.percent || 0}%)\n` +
-        `Vote: ${context.activeVote?.topic || 'none'}`;
+      // Build Elder input
+      const elderInput = buildElderInput(gameState, patch.cadence, {
+        top_recent_actions: gameState.nowRing.topRecentActions,
+        last_messages_summary: gameState.lastMessagesSummary || [],
+        safety_notes: patch.safety?.notes_for_elder || null
+      });
 
       try {
-        const elderResponse = await janitorAdapter.generateResponse(elderPrompt, context);
+        const elderOutput = await speakNPC('elder_mycel', elderInput);
         
+        // Validate output
+        if (!elderOutput.message_text || !elderOutput.nudge?.startsWith('Next:')) {
+          throw new Error('elder_output_invalid');
+        }
+
+        // Store telemetry
         gameState.resetPulseCounter();
         gameState.elderLastSpoke = Date.now();
+        if (!gameState.elderTelemetry) {
+          gameState.elderTelemetry = [];
+        }
+        gameState.elderTelemetry.push({
+          timestamp: Date.now(),
+          referenced_stones: elderOutput.referenced_stones,
+          acknowledged_users: elderOutput.acknowledged_users,
+          nudge: elderOutput.nudge
+        });
 
+        // Broadcast Elder message
         broadcast(createMessage(MessageType.ELDER_SAY, {
-          text: elderResponse,
-          trigger: patch.cadence.triggerReason || 'pulse',
+          text: elderOutput.message_text,
+          trigger: patch.cadence.reason || 'pulse',
           timestamp: Date.now()
         }));
 
-        console.log(`[Janitor:${requestId}] Success - Elder spoke`);
+        console.log(`[Elder:${requestId}] Success - Elder spoke`);
       } catch (error) {
-        console.error(`[Janitor:${requestId}] Error - ${error.message}`);
+        console.error(`[Elder:${requestId}] Error - ${error.message}`);
+        
+        // Fallback message
+        const fallback = {
+          referenced_stones: [],
+          acknowledged_users: [],
+          nudge: 'Next: Contribute one needed item.',
+          message_text: 'The village moves by gentle steps.\n\nNext: Contribute one needed item.'
+        };
+
+        broadcast(createMessage(MessageType.ELDER_SAY, {
+          text: fallback.message_text,
+          trigger: 'fallback',
+          timestamp: Date.now()
+        }));
+
+        console.log(`[Elder:${requestId}] Fallback message used`);
       }
     }
 

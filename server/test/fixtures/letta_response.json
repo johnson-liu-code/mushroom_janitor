@@ -1,0 +1,58 @@
+{
+  "cadence": {
+    "should_elder_speak": true,
+    "mode": "CALL_RESPONSE",
+    "reason": "direct_question_waiting",
+    "cooldown_s": 5,
+    "question": "Is moss rope safe in rain?"
+  },
+  "vote": {
+    "status": "OPEN",
+    "tally": {
+      "Cedar Plank": 1,
+      "Moss Rope": 1
+    },
+    "winner": null,
+    "close_reason": null
+  },
+  "resources": {
+    "quest_percent": 50,
+    "needs": [
+      {
+        "item": "cedar",
+        "qty": 2
+      },
+      {
+        "item": "resin",
+        "qty": 1
+      }
+    ],
+    "threshold_crossed": true,
+    "crossed_at": 50
+  },
+  "trades": {
+    "actions": []
+  },
+  "archive": {
+    "promote_ids": [
+      "j12"
+    ],
+    "new_stones": [
+      {
+        "title": "The Brook's Balance",
+        "text": "The brook teaches balance.",
+        "tags": [
+          "wisdom",
+          "quest"
+        ]
+      }
+    ],
+    "prune_ids": [],
+    "merge_pairs": []
+  },
+  "safety": {
+    "flags": [],
+    "rate_limits": [],
+    "notes_for_elder": null
+  }
+}
