@@ -22,8 +22,6 @@ import { lettaAdapter } from './adapters/letta.js';
 import { mycelialSteward } from './adapters/mycelial-steward.js';
 import normalizeLettaPatch from './adapters/letta_normalizer.js';
 import { applyPatch } from './engine/apply_patch.js';
-import { buildElderInput } from './engine/build_elder_input.js';
-import { speakNPC, getStatus as getElderStatus } from './adapters/elder_adapter.js';
 import { parseCommand } from './command_parser.js';
 import { detectStateChanges, createStateSnapshot, shouldProcessTick } from './state_diff.js';
 import { checkAndCompleteQuest } from './quest_generator.js';
@@ -98,8 +96,7 @@ const server = createServer((req, res) => {
       },
       adapters: {
         letta: mycelialSteward.getStatus(),
-        janitor: janitorAdapter.getStatus(),
-        elder: getElderStatus()
+        janitor: janitorAdapter.getStatus()
       },
       game: {
         players: gameState.players.size,
@@ -767,6 +764,9 @@ async function serverTick() {
     // Capture and clear batched messages
     const batchedMessages = messageQueue.splice(0, messageQueue.length);
     
+    // Get recent messages for Letta
+    const recentMessages = gameState.messages.slice(-20);
+    
     const payload = {
       timestamp: Date.now(),
       players: Array.from(gameState.players.values()).map(p => ({
@@ -783,6 +783,7 @@ async function serverTick() {
       recentActions: gameState.nowRing.topRecentActions,
       journalQueue: lichenArchivist.getPendingJournals(),
       batchedMessages,  // NEW: Include batched messages
+      messages: recentMessages,  // NEW: Recent messages for Elder context
       context: {
         messagesSincePulse: gameState.messagesSinceLastPulse,
         timeSincePulse: Date.now() - gameState.lastPulseTime,
@@ -848,124 +849,9 @@ async function serverTick() {
       trades: sporocarpBroker.getOpenOffers()
     }));
 
-    // CADENCE: Trigger Elder if needed
-    if (patch.cadence.shouldElderSpeak || patch.cadence.should_elder_speak) {
-      const requestId = `elder_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
-      console.log(`[${tickId}] Cadence triggered: ${patch.cadence.triggerReason || patch.cadence.trigger_reason}`);
-      console.log(`[Elder:${requestId}] Building Elder input bundle`);
-      
-      // Build Elder input
-      const elderInput = buildElderInput(gameState, patch.cadence, {
-        top_recent_actions: gameState.nowRing.topRecentActions,
-        last_messages_summary: gameState.lastMessagesSummary || [],
-        safety_notes: patch.safety?.notes_for_elder || null,
-        elder_instructions: patch.elder_instructions || {}
-      });
-
-      try {
-        const elderOutput = await speakNPC('elder_mycel', elderInput);
-        
-        // Validate + sanitize nudge
-        let nudge = 'Next: Contribute one needed item.';
-        if (elderOutput?.nudge && elderOutput.nudge.startsWith('Next:')) {
-          nudge = elderOutput.nudge;
-        }
-        
-        // Validate + sanitize text - ensure it ends with "Next:" line
-        let text = elderOutput?.message_text || 'The village moves by gentle steps.';
-        if (!text.includes('Next:')) {
-          text = `${text}\n\n${nudge}`;
-        }
-
-        // Store telemetry
-        gameState.resetPulseCounter();
-        gameState.elderLastSpoke = Date.now();
-        if (!gameState.elderTelemetry) {
-          gameState.elderTelemetry = [];
-        }
-        gameState.elderTelemetry.push({
-          timestamp: Date.now(),
-          referenced_stones: elderOutput.referenced_stones,
-          acknowledged_users: elderOutput.acknowledged_users,
-          nudge
-        });
-
-        // Check if this should be a DM or broadcast
-        const isDM = patch.elder_instructions?.mode === 'dm';
-        const targetUserId = patch.elder_instructions?.target_user_id;
-        
-        if (isDM && targetUserId) {
-          // Send as private message to specific player
-          gameState.addPrivateMessage(targetUserId, text);
-          
-          // Find the WebSocket connection for this player
-          let targetWs = null;
-          for (const [ws, client] of clients.entries()) {
-            if (client.playerId === targetUserId || client.playerName === targetUserId) {
-              targetWs = ws;
-              break;
-            }
-          }
-          
-          if (targetWs) {
-            sendToClient(targetWs, createMessage(MessageType.ELDER_DM, {
-              text,
-              timestamp: Date.now(),
-              unreadCount: gameState.getUnreadDMCount(targetUserId)
-            }));
-            console.log(`[Elder:${requestId}] Success - Elder sent DM to ${targetUserId}`);
-          } else {
-            console.log(`[Elder:${requestId}] Warning - Player ${targetUserId} not connected, DM queued`);
-          }
-          
-          // Also log to message history with DM marker
-          gameState.messages.push({
-            type: 'ELDER_DM',
-            text,
-            nudge,
-            targetUser: targetUserId,
-            at: Date.now()
-          });
-        } else {
-          // Broadcast to all players
-          gameState.messages.push({
-            type: 'ELDER_SAY',
-            text,
-            nudge,
-            at: Date.now()
-          });
-
-          broadcast(createMessage(MessageType.ELDER_SAY, {
-            text,
-            trigger: patch.cadence.triggerReason || patch.cadence.trigger_reason || 'pulse',
-            timestamp: Date.now()
-          }));
-
-          console.log(`[Elder:${requestId}] Success - Elder spoke (broadcast)`);
-        }
-      } catch (error) {
-        console.error(`[Elder:${requestId}] Error - ${error.message}`);
-        
-        // Fallback message
-        const fallbackText = 'The village moves by gentle steps.\n\nNext: Contribute one needed item.';
-        const fallbackNudge = 'Next: Contribute one needed item.';
-        
-        // Push into message history
-        gameState.messages.push({
-          type: 'ELDER_SAY',
-          text: fallbackText,
-          nudge: fallbackNudge,
-          at: Date.now()
-        });
-
-        broadcast(createMessage(MessageType.ELDER_SAY, {
-          text: fallbackText,
-          trigger: 'fallback',
-          timestamp: Date.now()
-        }));
-
-        console.log(`[Elder:${requestId}] Fallback message used`);
-      }
+    // Elder speaks - Letta now handles all orchestration
+    if (patch.elder_message) {
+      broadcast(createMessage(MessageType.ELDER_SAY, patch.elder_message));
     }
 
   } catch (error) {
@@ -1148,56 +1034,6 @@ async function handleChatCommand(data) {
   
   applyPatch(gameState, patch, { log });
   
-  // Trigger Elder if needed
-  if (patch.cadence?.shouldElderSpeak || patch.cadence?.should_elder_speak) {
-    const elderInput = buildElderInput(gameState, patch.cadence, {
-      top_recent_actions: gameState.nowRing.topRecentActions || [],
-      last_messages_summary: gameState.messages.slice(-8).map(m => ({
-        user: m.user || 'system',
-        text: m.text,
-        at: m.at
-      })),
-      safety_notes: patch.safety?.notes_for_elder || null,
-      elder_instructions: patch.elder_instructions || {}
-    });
-    
-    try {
-      const elderOutput = await speakNPC('elder_mycel', elderInput);
-      
-      // Validate nudge
-      let nudge = 'Next: Contribute one needed item.';
-      if (elderOutput?.nudge && elderOutput.nudge.startsWith('Next:')) {
-        nudge = elderOutput.nudge;
-      }
-      
-      // Validate text
-      let elderText = elderOutput?.message_text || 'The village moves by gentle steps.';
-      if (!elderText.includes('Next:')) {
-        elderText = `${elderText}\n\n${nudge}`;
-      }
-      
-      // Push ELDER_SAY into messages
-      gameState.messages.push({
-        type: 'ELDER_SAY',
-        text: elderText,
-        nudge,
-        at: Date.now()
-      });
-      
-      // Increment elder request count
-      const elderStatus = getElderStatus();
-      if (!elderStatus.requestCount) {
-        elderStatus.requestCount = 1;
-      } else {
-        elderStatus.requestCount++;
-      }
-      
-    } catch (elderError) {
-      console.warn(`[API:chat] Elder error: ${elderError.message}`);
-      // Don't fail the whole request if Elder fails
-    }
-  }
-  
   // Build response
   const quest = gameState.nowRing.activeQuest;
   const vote = gameState.nowRing.activeVote;
@@ -1291,52 +1127,9 @@ async function runDebugTick(payload) {
     };
     
     applyPatch(gameState, patch, { log });
-
-    // Call Elder if cadence says to
-    let elderMessage = null;
-    if (patch.cadence?.shouldElderSpeak || patch.cadence?.should_elder_speak) {
-      const elderInput = buildElderInput(gameState, patch.cadence, {
-        top_recent_actions: payload.recentActions?.map(a => a.text || String(a)) || [],
-        last_messages_summary: ['Direct question about moss rope in rain', 'Vote 1–1 tie'],
-        safety_notes: patch.safety?.notes_for_elder || null
-      });
-
-      try {
-        const out = await speakNPC('elder_mycel', elderInput);
-        
-        // Validate + sanitize nudge
-        let nudge = 'Next: Contribute one needed item.';
-        if (out?.nudge && out.nudge.startsWith('Next:')) {
-          nudge = out.nudge;
-        }
-        
-        // Validate + sanitize text - ensure it ends with "Next:" line
-        let text = out?.message_text || 'The village moves by gentle steps.';
-        if (!text.includes('Next:')) {
-          text = `${text}\n\n${nudge}`;
-        }
-        
-        // Push into message history
-        elderMessage = {
-          type: 'ELDER_SAY',
-          text,
-          nudge,
-          at: Date.now()
-        };
-        gameState.messages.push(elderMessage);
-        
-      } catch (error) {
-        console.error(`[${tickId}] Elder error: ${error.message}`);
-        // Fallback
-        elderMessage = {
-          type: 'ELDER_SAY',
-          text: 'The village moves by gentle steps.\n\nNext: Contribute one needed item.',
-          nudge: 'Next: Contribute one needed item.',
-          at: Date.now()
-        };
-        gameState.messages.push(elderMessage);
-      }
-    }
+    
+    // Elder message from patch (if present)
+    const elderMessage = patch.elder_message || null;
 
     // Build response
     return {
@@ -1377,9 +1170,6 @@ server.listen(PORT, () => {
   
   const stewardStatus = mycelialSteward.getStatus();
   console.log(`🍄 MycelialSteward: ${stewardStatus.mode}${stewardStatus.reason ? ` (${stewardStatus.reason})` : ''}`);
-  
-  const elderStatus = getElderStatus();
-  console.log(`👴 Elder Provider: ${elderStatus.provider}`);
   
   console.log('');
   

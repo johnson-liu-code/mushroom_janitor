@@ -597,6 +597,19 @@ Always return valid JSON matching the output schema.`;
         conversation_thread: elderInst.conversation_thread || ''
       };
 
+    // 8. ELDER_MESSAGE: Complete Elder response from Letta (NEW)
+      const elderMsg = parsed.elder_message || null;
+      if (elderMsg) {
+        normalized.elder_message = {
+          text: elderMsg.text || '',
+          nudge: elderMsg.nudge || null,
+          referenced_stones: Array.isArray(elderMsg.referenced_stones) ? elderMsg.referenced_stones : [],
+          acknowledged_users: Array.isArray(elderMsg.acknowledged_users) ? elderMsg.acknowledged_users : []
+        };
+      } else {
+        normalized.elder_message = null;
+      }
+
       return normalized;
     } catch (error) {
       console.error('[MycelialSteward] Normalization error:', error.message);
@@ -630,60 +643,23 @@ Always return valid JSON matching the output schema.`;
         context_summary: '',
         referenced_messages: [],
         conversation_thread: ''
-      }
+      },
+        elder_message: null  // ADD THIS LINE
     };
   }
 
   /**
    * Build Elder input bundle for Janitor API
    */
-  buildElderInputBundle(gameState, patch, recentMessages = []) {
-    // Canon stones (≤12)
-    const canon_stones = gameState.getMemoryStones().slice(0, 12);
-
-    // Now ring
-    const quest = gameState.nowRing.activeQuest;
-    const vote = gameState.nowRing.activeVote;
-    
-    const now = {
-      quest: quest ? {
-        name: quest.name,
-        percent: quest.percent || 0,
-        needs: patch.resources.needs
-      } : null,
-      vote: vote ? {
-        topic: vote.topic,
-        options: vote.options,
-        leading: this._getLeadingVoteOption(vote)
-      } : null,
-      stockpile: gameState.stockpile
-    };
-
-    // Top recent actions (≤5)
-    const top_recent_actions = gameState.nowRing.topRecentActions.slice(0, 5);
-
-    // Last messages summary (≤8)
-    const last_messages_summary = recentMessages.slice(-8).map(m => ({
-      player: m.playerName || m.from,
-      text: m.text,
-      timestamp: m.timestamp
-    }));
-
-    // Safety notes
-    const safety_notes = patch.safety.notes_for_elder;
-
-    // Question if CALL_RESPONSE
-    const question = patch.cadence.mode === 'CALL_RESPONSE' ? patch.cadence.question : null;
-
+    buildElderInputBundle(gameState, patch, recentMessages = []) {
+    // Simply return the payload for Letta
+    // Letta will build its own prompts
     return {
-      canon_stones,
-      now,
-      top_recent_actions,
-      last_messages_summary,
-      safety_notes,
-      question
+        ...gameState,
+        patch,
+        messages: recentMessages.slice(-20)  // Last 20 for context
     };
-  }
+    }
 
   /**
    * Get leading vote option
@@ -715,59 +691,6 @@ Always return valid JSON matching the output schema.`;
   }
 
   /**
-   * Validate and normalize the response
-   * Extracts JSON from text+JSON, fills missing fields with safe defaults
-   */
-  validateAndNormalize(response) {
-    let parsed = response;
-
-    // If response is a string, try to extract JSON
-    if (typeof response === 'string') {
-      // Try to find JSON in the string
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          parsed = JSON.parse(jsonMatch[0]);
-        } catch (e) {
-          console.warn('Failed to parse JSON from response, using empty patch');
-          parsed = {};
-        }
-      } else {
-        parsed = {};
-      }
-    }
-
-    // Apply safe defaults for missing fields
-    return {
-      trades: {
-        resolve: parsed.trades?.resolve || [],
-        cancel: parsed.trades?.cancel || []
-      },
-      vote: {
-        close: parsed.vote?.close || false,
-        decisionCard: parsed.vote?.decisionCard || null
-      },
-      resources: {
-        stockpileDeltas: parsed.resources?.stockpileDeltas || {},
-        questPercentDelta: parsed.resources?.questPercentDelta || 0
-      },
-      archive: {
-        promoteJournals: parsed.archive?.promoteJournals || [],
-        pruneStones: parsed.archive?.pruneStones || [],
-        newStones: parsed.archive?.newStones || []
-      },
-      safety: {
-        warnings: parsed.safety?.warnings || [],
-        calmDown: parsed.safety?.calmDown || []
-      },
-      cadence: {
-        shouldElderSpeak: parsed.cadence?.shouldElderSpeak || false,
-        triggerReason: parsed.cadence?.triggerReason || null
-      }
-    };
-  }
-
-  /**
    * Mock orchestration with deterministic logic
    */
   mockOrchestrate(input) {
@@ -786,7 +709,8 @@ Always return valid JSON matching the output schema.`;
         context_summary: '',
         referenced_messages: [],
         conversation_thread: ''
-      }
+      },
+      elder_message: null
     };
 
     const { state, context } = input;

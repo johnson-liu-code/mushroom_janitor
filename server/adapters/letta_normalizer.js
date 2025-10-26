@@ -12,10 +12,10 @@
  * @param {Object} tickContext - Server-side context
  * @param {string|null} [tickContext.distilledQuestion] - Distilled question for CALL_RESPONSE mode
  * @param {Record<string, {id: string, text: string}>} [tickContext.journalsById] - Journal lookup map
- * @returns {Object} Normalized patch with all six sections
+ * @returns {Object} Normalized patch with all seven sections
  */
 export default function normalizeLettaPatch(raw, tickContext = {}) {
-  // Start with safe skeleton - all six sections present with defaults
+  // Start with safe skeleton - all seven sections present with defaults
   const normalized = {
     cadence: {
       should_elder_speak: false,
@@ -49,7 +49,8 @@ export default function normalizeLettaPatch(raw, tickContext = {}) {
       flags: [],
       rate_limits: [],
       notes_for_elder: null
-    }
+    },
+    elder_message: null
   };
 
   // Parse raw if string
@@ -224,6 +225,18 @@ export default function normalizeLettaPatch(raw, tickContext = {}) {
     // Notes for Elder (empty string → null)
     const notes = s.notes || s.notes_for_elder || s.notesForElder || '';
     normalized.safety.notes_for_elder = notes === '' ? null : (notes || null);
+  }
+
+  // 7. ELDER_MESSAGE
+  // Letta now handles all Elder orchestration and returns complete elder_message
+  if (parsed.elder_message) {
+    const em = parsed.elder_message;
+    normalized.elder_message = {
+      text: String(em.text || ''),
+      nudge: String(em.nudge || ''),
+      referenced_stones: Array.isArray(em.referenced_stones) ? em.referenced_stones.map(String) : [],
+      acknowledged_users: Array.isArray(em.acknowledged_users) ? em.acknowledged_users.map(String) : []
+    };
   }
 
   return normalized;
