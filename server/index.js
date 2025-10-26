@@ -24,6 +24,7 @@ import normalizeLettaPatch from './adapters/letta_normalizer.js';
 import { applyPatch } from './engine/apply_patch.js';
 import { buildElderInput } from './engine/build_elder_input.js';
 import { speakNPC, getStatus as getElderStatus } from './adapters/elder_adapter.js';
+import { parseCommand } from './command_parser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -178,6 +179,79 @@ const server = createServer((req, res) => {
         res.end(JSON.stringify({ error: error.message }));
       }
     });
+    return;
+  }
+
+  // Debug endpoint: GET /debug/routes
+  if (req.url === '/debug/routes') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify([
+      { method: 'POST', path: '/api/chat' },
+      { method: 'GET', path: '/api/feed' },
+      { method: 'GET', path: '/api/state' },
+      { method: 'GET', path: '/health' },
+      { method: 'GET', path: '/status' },
+      { method: 'GET', path: '/debug/env' },
+      { method: 'GET', path: '/debug/letta-ping' },
+      { method: 'GET', path: '/debug/letta-last' },
+      { method: 'GET', path: '/debug/last-elder' },
+      { method: 'POST', path: '/debug/run-tick' },
+      { method: 'GET', path: '/debug/routes' }
+    ]));
+    return;
+  }
+
+  // API endpoint: POST /api/chat
+  if (req.url === '/api/chat' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk.toString());
+    req.on('end', async () => {
+      try {
+        const data = JSON.parse(body);
+        const result = await handleChatCommand(data);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error.message }));
+      }
+    });
+    return;
+  }
+
+  // API endpoint: GET /api/feed
+  if (req.url.startsWith('/api/feed')) {
+    const url = new URL(req.url, `http://localhost:${PORT}`);
+    const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+    
+    const messages = gameState.messages.slice(-Math.min(limit, 100));
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ messages }));
+    return;
+  }
+
+  // API endpoint: GET /api/state
+  if (req.url === '/api/state') {
+    const quest = gameState.nowRing.activeQuest;
+    const vote = gameState.nowRing.activeVote;
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      players: gameState.players.size,
+      stockpile: gameState.stockpile,
+      quest: quest ? {
+        name: quest.name,
+        percent: quest.percent || 0,
+        needs: quest.needs || []
+      } : null,
+      vote: vote ? {
+        topic: vote.topic,
+        tally: vote.tally || {},
+        status: vote.status
+      } : null,
+      stones: gameState.canonRing.map(s => s.title)
+    }));
     return;
   }
 
@@ -758,6 +832,252 @@ async function serverTick() {
     console.error(`[${tickId}] Server tick error:`, error);
     // Continue operation even if tick fails
   }
+}
+
+/**
+ * Handle chat command from API
+ */
+async function handleChatCommand(data) {
+  const { user, text } = data;
+  
+  // Validate inputs
+  if (!user || !text || typeof user !== 'string' || typeof text !== 'string') {
+    return { ok: false, error: 'Invalid input: user and text required' };
+  }
+  
+  const trimmedUser = user.trim();
+  const trimmedText = text.trim();
+  
+  if (!trimmedUser || !trimmedText) {
+    return { ok: false, error: 'User and text cannot be empty' };
+  }
+  
+  // Ensure player exists in state
+  let player = gameState.getPlayer(trimmedUser);
+  if (!player) {
+    player = createPlayer(trimmedUser, trimmedUser);
+    gameState.addPlayer(player);
+  }
+  
+  // Parse command
+  const parsed = parseCommand(trimmedText);
+  
+  // Handle invalid commands
+  if (parsed.cmd === 'invalid') {
+    return { ok: false, error: parsed.error };
+  }
+  
+  // Apply immediate state mutations
+  try {
+    switch (parsed.cmd) {
+      case 'gather': {
+        const { item, qty } = parsed.args;
+        gameState.updatePlayerInventory(trimmedUser, item, qty);
+        break;
+      }
+      
+      case 'donate': {
+        const { item, qty } = parsed.args;
+        const available = player.inventory[item] || 0;
+        const actualQty = Math.min(qty, available);
+        
+        if (actualQty > 0) {
+          gameState.updatePlayerInventory(trimmedUser, item, -actualQty);
+          gameState.stockpile[item] = (gameState.stockpile[item] || 0) + actualQty;
+        }
+        break;
+      }
+      
+      case 'offer': {
+        const { give, want } = parsed.args;
+        const offerId = `o${Date.now()}`;
+        
+        if (!gameState.nowRing.tradeBoard) {
+          gameState.nowRing.tradeBoard = { offers: [], events: [] };
+        }
+        
+        gameState.nowRing.tradeBoard.offers.push({
+          id: offerId,
+          from: trimmedUser,
+          give,
+          want,
+          status: 'OPEN',
+          createdAt: Date.now()
+        });
+        break;
+      }
+      
+      case 'accept': {
+        const { offerId } = parsed.args;
+        
+        if (!gameState.nowRing.tradeBoard) {
+          gameState.nowRing.tradeBoard = { offers: [], events: [] };
+        }
+        
+        gameState.nowRing.tradeBoard.events.push({
+          type: 'accept',
+          id: offerId,
+          by: trimmedUser,
+          at: Date.now()
+        });
+        break;
+      }
+      
+      case 'vote': {
+        const { option } = parsed.args;
+        
+        if (gameState.nowRing.activeVote) {
+          if (!gameState.nowRing.activeVote.tally) {
+            gameState.nowRing.activeVote.tally = {};
+          }
+          gameState.nowRing.activeVote.tally[trimmedUser] = option;
+        }
+        break;
+      }
+      
+      case 'journal': {
+        const { text: journalText } = parsed.args;
+        const journalId = `j${Date.now()}`;
+        
+        lichenArchivist.addJournal(trimmedUser, journalText);
+        break;
+      }
+      
+      case 'chat':
+        // No immediate mutation for plain chat
+        break;
+    }
+  } catch (mutationError) {
+    return { ok: false, error: `State mutation failed: ${mutationError.message}` };
+  }
+  
+  // Append USER message to history
+  gameState.messages.push({
+    type: 'USER',
+    user: trimmedUser,
+    text: trimmedText,
+    at: Date.now()
+  });
+  
+  // Build tick payload from current state
+  const payload = {
+    timestamp: Date.now(),
+    players: Array.from(gameState.players.values()).map(p => ({
+      id: p.id,
+      name: p.name,
+      inventory: p.inventory,
+      messageCount: p.messageCount || 0
+    })),
+    stockpile: gameState.stockpile,
+    activeQuest: gameState.nowRing.activeQuest,
+    activeVote: gameState.nowRing.activeVote,
+    openOffers: gameState.nowRing.tradeBoard?.offers || [],
+    memoryStones: gameState.getMemoryStones(),
+    recentActions: gameState.nowRing.topRecentActions || [],
+    journalQueue: lichenArchivist.getPendingJournals(),
+    context: {
+      messagesSincePulse: gameState.messagesSinceLastPulse || 0,
+      timeSincePulse: Date.now() - (gameState.lastPulseTime || Date.now()),
+      activeWarnings: [],
+      priorQuestPercent: gameState.nowRing.activeQuest?.percent || 0
+    }
+  };
+  
+  // Call Letta (LIVE if configured)
+  const rawPatch = await mycelialSteward.sendTick(payload);
+  
+  // Build tick context for normalizer
+  const tickContext = {
+    distilledQuestion: parsed.cmd === 'chat' ? trimmedText : null,
+    journalsById: {}
+  };
+  
+  const pendingJournals = lichenArchivist.getPendingJournals();
+  for (const journal of pendingJournals) {
+    tickContext.journalsById[journal.id] = journal;
+  }
+  
+  // Normalize patch
+  const patch = normalizeLettaPatch(rawPatch, tickContext);
+  
+  // Apply patch to state
+  const log = {
+    warn: (msg) => console.warn(`[API:chat] ${msg}`),
+    info: (msg) => console.log(`[API:chat] ${msg}`)
+  };
+  
+  applyPatch(gameState, patch, { log });
+  
+  // Trigger Elder if needed
+  if (patch.cadence?.shouldElderSpeak || patch.cadence?.should_elder_speak) {
+    const elderInput = buildElderInput(gameState, patch.cadence, {
+      top_recent_actions: gameState.nowRing.topRecentActions || [],
+      last_messages_summary: gameState.messages.slice(-8).map(m => ({
+        user: m.user || 'system',
+        text: m.text,
+        at: m.at
+      })),
+      safety_notes: patch.safety?.notes_for_elder || null
+    });
+    
+    try {
+      const elderOutput = await speakNPC('elder_mycel', elderInput);
+      
+      // Validate nudge
+      let nudge = 'Next: Contribute one needed item.';
+      if (elderOutput?.nudge && elderOutput.nudge.startsWith('Next:')) {
+        nudge = elderOutput.nudge;
+      }
+      
+      // Validate text
+      let elderText = elderOutput?.message_text || 'The village moves by gentle steps.';
+      if (!elderText.includes('Next:')) {
+        elderText = `${elderText}\n\n${nudge}`;
+      }
+      
+      // Push ELDER_SAY into messages
+      gameState.messages.push({
+        type: 'ELDER_SAY',
+        text: elderText,
+        nudge,
+        at: Date.now()
+      });
+      
+      // Increment elder request count
+      const elderStatus = getElderStatus();
+      if (!elderStatus.requestCount) {
+        elderStatus.requestCount = 1;
+      } else {
+        elderStatus.requestCount++;
+      }
+      
+    } catch (elderError) {
+      console.warn(`[API:chat] Elder error: ${elderError.message}`);
+      // Don't fail the whole request if Elder fails
+    }
+  }
+  
+  // Build response
+  const quest = gameState.nowRing.activeQuest;
+  const vote = gameState.nowRing.activeVote;
+  const lastElder = gameState.messages.filter(m => m.type === 'ELDER_SAY').slice(-1)[0] || null;
+  
+  return {
+    ok: true,
+    state: {
+      quest: quest ? {
+        percent: quest.percent || 0,
+        needs: quest.needs || []
+      } : null,
+      vote: vote ? {
+        topic: vote.topic,
+        tally: vote.tally || {},
+        status: vote.status
+      } : null,
+      stockpile: gameState.stockpile
+    },
+    elder: lastElder
+  };
 }
 
 /**
