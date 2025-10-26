@@ -1,13 +1,10 @@
 // Main server: HTTP + WebSocket
+import 'dotenv/config';
 import { createServer } from 'http';
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
-import dotenv from 'dotenv';
-
-// Load environment variables
-dotenv.config();
 
 // Import game modules
 import { gameState } from './state.js';
@@ -80,6 +77,74 @@ const server = createServer((req, res) => {
         activeQuest: gameState.nowRing.activeQuest?.name || null,
         activeVote: gameState.nowRing.activeVote?.topic || null
       }
+    }));
+    return;
+  }
+
+  // Debug endpoint: GET /debug/env
+  if (req.url === '/debug/env') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      LLM_MODE: process.env.LLM_MODE || null,
+      LETTA_API_KEY: process.env.LETTA_API_KEY ? `****${process.env.LETTA_API_KEY.slice(-4)}` : null,
+      LETTA_BASE_URL: process.env.LETTA_BASE_URL || 'https://api.letta.com',
+      LETTA_AGENT_ID: process.env.LETTA_AGENT_ID || null,
+      ELDER_PROVIDER: process.env.ELDER_PROVIDER || null,
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? `****${process.env.ANTHROPIC_API_KEY.slice(-4)}` : null
+    }));
+    return;
+  }
+
+  // Debug endpoint: GET /debug/letta-ping
+  if (req.url === '/debug/letta-ping') {
+    const pingLetta = async () => {
+      try {
+        const { getLettaClient, getLettaAgentId } = await import('./adapters/letta_client.js');
+        
+        // Get agent ID - will throw if missing
+        const agentId = getLettaAgentId();
+        
+        // Get SDK client - will throw if missing API key
+        const client = getLettaClient();
+        
+        // Try to retrieve agent info (lighter than sending a message)
+        await client.agents.retrieve(agentId);
+        
+        return { ok: true };
+      } catch (err) {
+        // Return error info without exposing sensitive data
+        const errorResponse = {
+          ok: false,
+          error: err.message
+        };
+        
+        // Add status code if available
+        if (err.statusCode || err.status) {
+          errorResponse.status = err.statusCode || err.status;
+        }
+        
+        return errorResponse;
+      }
+    };
+
+    pingLetta()
+      .then(result => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      })
+      .catch(error => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error.message }));
+      });
+    return;
+  }
+
+  // Debug endpoint: GET /debug/letta-last
+  if (req.url === '/debug/letta-last') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      lastRequest: mycelialSteward.lastRequest,
+      lastResponsePreview: mycelialSteward.lastResponsePreview
     }));
     return;
   }
@@ -607,9 +672,9 @@ async function serverTick() {
     }));
 
     // CADENCE: Trigger Elder if needed
-    if (patch.cadence.should_elder_speak) {
+    if (patch.cadence.shouldElderSpeak || patch.cadence.should_elder_speak) {
       const requestId = `elder_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
-      console.log(`[${tickId}] Cadence triggered: ${patch.cadence.reason}`);
+      console.log(`[${tickId}] Cadence triggered: ${patch.cadence.triggerReason || patch.cadence.trigger_reason}`);
       console.log(`[Elder:${requestId}] Building Elder input bundle`);
       
       // Build Elder input
@@ -622,12 +687,17 @@ async function serverTick() {
       try {
         const elderOutput = await speakNPC('elder_mycel', elderInput);
         
-        // Validate + sanitize
-        const nudge = (elderOutput?.nudge && elderOutput.nudge.startsWith('Next:')) 
-          ? elderOutput.nudge 
-          : 'Next: Contribute one needed item.';
-        const text = (elderOutput?.message_text || 'The village moves by gentle steps.') + 
-          (elderOutput?.message_text?.includes('Next:') ? '' : `\n\n${nudge}`);
+        // Validate + sanitize nudge
+        let nudge = 'Next: Contribute one needed item.';
+        if (elderOutput?.nudge && elderOutput.nudge.startsWith('Next:')) {
+          nudge = elderOutput.nudge;
+        }
+        
+        // Validate + sanitize text - ensure it ends with "Next:" line
+        let text = elderOutput?.message_text || 'The village moves by gentle steps.';
+        if (!text.includes('Next:')) {
+          text = `${text}\n\n${nudge}`;
+        }
 
         // Store telemetry
         gameState.resetPulseCounter();
@@ -639,7 +709,7 @@ async function serverTick() {
           timestamp: Date.now(),
           referenced_stones: elderOutput.referenced_stones,
           acknowledged_users: elderOutput.acknowledged_users,
-          nudge: elderOutput.nudge
+          nudge
         });
 
         // Push into message history
@@ -653,7 +723,7 @@ async function serverTick() {
         // Broadcast Elder message
         broadcast(createMessage(MessageType.ELDER_SAY, {
           text,
-          trigger: patch.cadence.reason || 'pulse',
+          trigger: patch.cadence.triggerReason || patch.cadence.trigger_reason || 'pulse',
           timestamp: Date.now()
         }));
 
@@ -762,7 +832,7 @@ async function runDebugTick(payload) {
 
     // Call Elder if cadence says to
     let elderMessage = null;
-    if (patch.cadence?.should_elder_speak) {
+    if (patch.cadence?.shouldElderSpeak || patch.cadence?.should_elder_speak) {
       const elderInput = buildElderInput(gameState, patch.cadence, {
         top_recent_actions: payload.recentActions?.map(a => a.text || String(a)) || [],
         last_messages_summary: ['Direct question about moss rope in rain', 'Vote 1–1 tie'],
@@ -772,12 +842,17 @@ async function runDebugTick(payload) {
       try {
         const out = await speakNPC('elder_mycel', elderInput);
         
-        // Validate + sanitize
-        const nudge = (out?.nudge && out.nudge.startsWith('Next:')) 
-          ? out.nudge 
-          : 'Next: Contribute one needed item.';
-        const text = (out?.message_text || 'The village moves by gentle steps.') + 
-          (out?.message_text?.includes('Next:') ? '' : `\n\n${nudge}`);
+        // Validate + sanitize nudge
+        let nudge = 'Next: Contribute one needed item.';
+        if (out?.nudge && out.nudge.startsWith('Next:')) {
+          nudge = out.nudge;
+        }
+        
+        // Validate + sanitize text - ensure it ends with "Next:" line
+        let text = out?.message_text || 'The village moves by gentle steps.';
+        if (!text.includes('Next:')) {
+          text = `${text}\n\n${nudge}`;
+        }
         
         // Push into message history
         elderMessage = {

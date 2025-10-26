@@ -1,6 +1,7 @@
 // MycelialSteward - Unified Letta adapter for all backstage agents
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { getLettaClient, getLettaAgentId } from './letta_client.js';
 import normalizeLettaPatch from './letta_normalizer.js';
 
 /**
@@ -79,6 +80,10 @@ class MycelialSteward {
     this.lastError = null;
     this.lastRequestId = null;
     this.systemPrompt = this.loadSystemPrompt();
+    
+    // Ring buffer for last LIVE request/response
+    this.lastRequest = null;
+    this.lastResponsePreview = null;
   }
 
   loadSystemPrompt() {
@@ -140,44 +145,178 @@ Always return valid JSON matching the output schema.`;
   }
 
   /**
-   * Call Letta API with unified input and timeout
+   * Robust assistant text extraction from Letta SDK response
+   */
+  extractAssistantText(res) {
+    // Helper to concatenate text parts
+    const concatTextParts = (content) => {
+      if (typeof content === 'string') return content;
+      if (Array.isArray(content)) {
+        return content
+          .filter(part => part.type === 'text' && part.text)
+          .map(part => part.text)
+          .join('\n');
+      }
+      return null;
+    };
+    
+    // Try different response structures in order
+    // 1) res.message?.content
+    if (res.message?.content) {
+      const text = concatTextParts(res.message.content);
+      if (text) return text;
+    }
+    
+    // 2) res.messages?.[res.messages.length-1]?.content (last message)
+    if (res.messages && res.messages.length > 0) {
+      // Find last assistant message
+      for (let i = res.messages.length - 1; i >= 0; i--) {
+        const msg = res.messages[i];
+        if (msg.role === 'assistant') {
+          const text = concatTextParts(msg.content);
+          if (text) return text;
+        }
+      }
+    }
+    
+    // 3) res.assistant_message?.content
+    if (res.assistant_message?.content) {
+      const text = concatTextParts(res.assistant_message.content);
+      if (text) return text;
+    }
+    
+    // 4) res.data?.[0]?.message?.content
+    if (res.data && res.data.length > 0 && res.data[0].message?.content) {
+      const text = concatTextParts(res.data[0].message.content);
+      if (text) return text;
+    }
+    
+    // 5) res.run?.messages with assistant filter
+    if (res.run?.messages) {
+      const assistantMsgs = res.run.messages.filter(m => m.role === 'assistant');
+      if (assistantMsgs.length > 0) {
+        const text = concatTextParts(assistantMsgs[assistantMsgs.length - 1].content);
+        if (text) return text;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Call Letta API via SDK with robust error handling
    */
   async callLettaAPI(input, requestId) {
-    const endpoint = `${this.baseUrl}/agents/execute`;
-    const timeout = 10000; // 10 second timeout
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
-
     try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`
-        },
-        body: JSON.stringify({
-          agent: 'mycelial-steward',
-          system_prompt: this.systemPrompt,
-          input
-        }),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+      // Get agent ID - will throw if missing
+      const agentId = getLettaAgentId();
+      
+      // Get SDK client - will throw if missing API key
+      const client = getLettaClient();
+      
+      // Build request body EXACTLY as Letta requires
+      const body = {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { 
+                type: "text", 
+                text: "Return ONLY a single JSON object per the schema you were configured with. No prose." 
+              },
+              { 
+                type: "text", 
+                text: JSON.stringify(input) 
+              }
+            ]
+          }
+        ]
+      };
+      
+      // Store last request preview (first 300 chars)
+      const bodyStr = JSON.stringify(body);
+      this.lastRequest = {
+        agentId,
+        bodyPreview: bodyStr.substring(0, 300)
+      };
+      
+      // Call SDK to send message
+      const response = await client.agents.messages.create(agentId, body);
+      
+      // Store raw response preview (first 400 chars for debugging)
+      const responsePreview = JSON.stringify(response).substring(0, 400);
+      
+      // Extract assistant text using robust helper
+      const resultContent = this.extractAssistantText(response);
+      
+      // Store last response preview
+      this.lastResponsePreview = resultContent ? resultContent.substring(0, 400) : responsePreview;
+      
+      if (!resultContent) {
+        this.lastError = "no assistant content";
+        console.warn(`[MycelialSteward:${requestId}] No assistant content in response, returning no-op patch`);
+        return this.getNoOpPatch();
       }
-
-      const data = await response.json();
-      return data.result || data;
-    } catch (error) {
-      clearTimeout(timeoutId);
-      if (error.name === 'AbortError') {
-        throw new Error('Request timeout (>10s)');
+      
+      // Parse JSON robustly
+      // 1) First try direct JSON.parse
+      try {
+        const parsed = JSON.parse(resultContent);
+        return parsed;
+      } catch (parseError) {
+        // 2) Try to extract JSON by finding first { and last }
+        console.warn(`[MycelialSteward:${requestId}] Failed direct parse: ${parseError.message}, trying substring extraction`);
+        
+        const firstBrace = resultContent.indexOf('{');
+        const lastBrace = resultContent.lastIndexOf('}');
+        
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          const jsonSubstr = resultContent.substring(firstBrace, lastBrace + 1);
+          try {
+            const parsed = JSON.parse(jsonSubstr);
+            return parsed;
+          } catch (e) {
+            this.lastError = "assistant content not JSON";
+            console.warn(`[MycelialSteward:${requestId}] Failed substring parse, returning no-op patch`);
+            return this.getNoOpPatch();
+          }
+        }
+        
+        this.lastError = "assistant content not JSON";
+        console.warn(`[MycelialSteward:${requestId}] No valid JSON found, returning no-op patch`);
+        return this.getNoOpPatch();
       }
-      throw error;
+    } catch (err) {
+      // Capture error details with truncation
+      let errorDetails = String(err);
+      if (err.body) {
+        const bodyStr = typeof err.body === 'string' ? err.body : JSON.stringify(err.body);
+        errorDetails = bodyStr.substring(0, 500);
+      } else if (err.message) {
+        errorDetails = err.message.substring(0, 500);
+      }
+      
+      this.lastError = errorDetails;
+      
+      // Robust error formatting based on error type
+      if (err.name === 'LettaError' || err.constructor.name === 'LettaError') {
+        console.error(`[MycelialSteward:${requestId}] LettaError`, {
+          status: err.statusCode || err.status,
+          message: err.message,
+          body: err.body
+        });
+      } else if (err.message && (err.message.includes('LETTA_API_KEY') || err.message.includes('LETTA_AGENT_ID'))) {
+        // Configuration error
+        console.error(`[MycelialSteward:${requestId}] ConfigError`, {
+          message: err.message
+        });
+      } else {
+        // Network or other error
+        console.error(`[MycelialSteward:${requestId}] NetworkError`, {
+          message: String(err)
+        });
+      }
+      throw err;
     }
   }
 

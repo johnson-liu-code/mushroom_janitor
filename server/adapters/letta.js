@@ -2,10 +2,26 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
+/**
+ * Compute Letta mode at call time based on environment
+ */
+function computeLettaMode() {
+  const llm = (process.env.LLM_MODE || '').trim().toUpperCase();
+  const hasKey = !!process.env.LETTA_API_KEY;
+  
+  if (llm === 'LIVE' && hasKey) {
+    return { mode: 'LIVE', reason: null };
+  }
+  if (llm !== 'LIVE') {
+    return { mode: 'MOCK', reason: "LLM_MODE!='LIVE'" };
+  }
+  return { mode: 'MOCK', reason: 'missing LETTA_API_KEY' };
+}
+
 class LettaAdapter {
   constructor() {
-    this.mode = process.env.LLM_MODE || 'MOCK';
     this.apiKey = process.env.LETTA_API_KEY;
+    this.baseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.ai/v1';
     this.prompts = this.loadPrompts();
   }
 
@@ -48,7 +64,9 @@ class LettaAdapter {
 
   // Refine journal to Memory Stone (Archivist)
   async refineJournalToStone(journalText) {
-    if (this.mode === 'LIVE' && this.apiKey) {
+    const { mode } = computeLettaMode();
+    
+    if (mode === 'LIVE' && this.apiKey) {
       try {
         return await this.callLettaAPI('archivist', {
           task: 'refine_journal',
@@ -65,7 +83,9 @@ class LettaAdapter {
 
   // Generate Decision Card (Tallykeeper)
   async generateDecisionCard(vote, results, winner) {
-    if (this.mode === 'LIVE' && this.apiKey) {
+    const { mode } = computeLettaMode();
+    
+    if (mode === 'LIVE' && this.apiKey) {
       try {
         return await this.callLettaAPI('tallykeeper', {
           task: 'decision_card',
@@ -84,7 +104,9 @@ class LettaAdapter {
 
   // Generate Quartermaster Summary
   async generateQuartermasterSummary(report) {
-    if (this.mode === 'LIVE' && this.apiKey) {
+    const { mode } = computeLettaMode();
+    
+    if (mode === 'LIVE' && this.apiKey) {
       try {
         return await this.callLettaAPI('quartermaster', {
           task: 'summary',
@@ -101,7 +123,9 @@ class LettaAdapter {
 
   // Generate Warden Summary
   async generateWardenSummary(data) {
-    if (this.mode === 'LIVE' && this.apiKey) {
+    const { mode } = computeLettaMode();
+    
+    if (mode === 'LIVE' && this.apiKey) {
       try {
         return await this.callLettaAPI('warden', {
           task: 'summary',
@@ -118,7 +142,9 @@ class LettaAdapter {
 
   // Generate Broker Summary
   async generateBrokerSummary(summary) {
-    if (this.mode === 'LIVE' && this.apiKey) {
+    const { mode } = computeLettaMode();
+    
+    if (mode === 'LIVE' && this.apiKey) {
       try {
         return await this.callLettaAPI('broker', {
           task: 'summary',
@@ -135,7 +161,7 @@ class LettaAdapter {
 
   // Call actual Letta API
   async callLettaAPI(agentType, payload) {
-    const endpoint = 'https://api.letta.ai/v1/agents/execute';
+    const endpoint = `${this.baseUrl}/agents/execute`;
 
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -245,16 +271,26 @@ class LettaAdapter {
 
   // Check if adapter is in LIVE mode
   isLive() {
-    return this.mode === 'LIVE' && this.apiKey;
+    const { mode } = computeLettaMode();
+    return mode === 'LIVE' && !!this.apiKey;
   }
 
   // Get mode status
   getStatus() {
-    return {
-      mode: this.mode,
+    const { mode, reason } = computeLettaMode();
+    
+    const status = {
+      mode,
       hasApiKey: !!this.apiKey,
-      active: this.isLive() ? 'LIVE' : 'MOCK'
+      active: mode === 'LIVE' ? 'LIVE' : 'MOCK'
     };
+    
+    // Include reason when in MOCK mode
+    if (mode === 'MOCK' && reason) {
+      status.reason = reason;
+    }
+    
+    return status;
   }
 }
 

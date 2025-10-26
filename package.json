@@ -6,19 +6,24 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node --watch server/index.js",
+    "dev": "node -r dotenv/config --watch server/index.js",
     "test": "node --test test/**/*.test.js",
     "smoke:tick": "node server/test/smoke_tick.js",
     "smoke:elder": "node tools/smoke_elder.js"
   },
-  "keywords": ["chat", "multiplayer", "websocket", "game"],
+  "keywords": [
+    "chat",
+    "multiplayer",
+    "websocket",
+    "game"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "ws": "^8.14.2",
-    "dotenv": "^16.3.1"
+    "@letta-ai/letta-client": "^0.0.68665",
+    "dotenv": "^16.3.1",
+    "ws": "^8.14.2"
   },
-  "devDependencies": {},
   "engines": {
     "node": ">=18.0.0"
   }
