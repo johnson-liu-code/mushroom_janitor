@@ -25,6 +25,8 @@ import { applyPatch } from './engine/apply_patch.js';
 import { buildElderInput } from './engine/build_elder_input.js';
 import { speakNPC, getStatus as getElderStatus } from './adapters/elder_adapter.js';
 import { parseCommand } from './command_parser.js';
+import { detectStateChanges, createStateSnapshot, shouldProcessTick } from './state_diff.js';
+import { checkAndCompleteQuest } from './quest_generator.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -712,11 +714,36 @@ async function handleAdminCommand(ws, client, message) {
   }));
 }
 
+// Track previous state for change detection
+let previousStateSnapshot = null;
+
 // Server tick orchestration with MycelialSteward
 async function serverTick() {
   const tickId = `tick_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
   
   try {
+    // Create current state snapshot
+    const currentSnapshot = createStateSnapshot(gameState);
+    
+    // Detect changes since last tick
+    const changes = previousStateSnapshot 
+      ? detectStateChanges(previousStateSnapshot, currentSnapshot)
+      : { hasSignificantChanges: true, details: ['Initial tick'] }; // Always process first tick
+    
+    // Update previous snapshot for next tick
+    previousStateSnapshot = currentSnapshot;
+    
+    // Skip processing if no significant changes
+    if (!shouldProcessTick(changes)) {
+      console.log(`[${tickId}] No significant changes, skipping Steward call`);
+      return;
+    }
+    
+    console.log(`[${tickId}] Changes detected: ${changes.details.join(', ')}`);
+    
+    // Update quest progress before building payload
+    gameState.updateQuestProgress();
+    
     // Build unified payload with prior quest percent
     const priorQuestPercent = gameState.nowRing.activeQuest?.percent || 0;
     
@@ -773,6 +800,23 @@ async function serverTick() {
     };
     
     applyPatch(gameState, patch, { log });
+
+    // Check for quest completion (after patch application)
+    const completionEvent = checkAndCompleteQuest(gameState);
+    if (completionEvent) {
+      console.log(`[${tickId}] Quest completed: ${completionEvent.completedQuest.name}`);
+      
+      // Broadcast celebration
+      broadcast(createMessage(MessageType.QUEST_COMPLETED, {
+        completedQuest: completionEvent.completedQuest,
+        newQuest: completionEvent.newQuest,
+        rewards: completionEvent.rewards,
+        timestamp: completionEvent.timestamp
+      }));
+      
+      // Update quest progress for new quest
+      gameState.updateQuestProgress();
+    }
 
     // Broadcast state updates after patch application
     broadcast(createMessage(MessageType.STATE_UPDATE, {

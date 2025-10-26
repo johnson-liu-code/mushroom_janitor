@@ -526,6 +526,177 @@ body {
   background: #3d6547;
 }
 
+/* Quest Completion Modal */
+.completion-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 2000;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.completion-content {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  max-width: 500px;
+  width: 90%;
+  overflow: hidden;
+  animation: slideUp 0.4s ease;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(50px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.completion-header {
+  background: linear-gradient(135deg, var(--success), #00d2a0);
+  color: white;
+  padding: 24px;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+
+.completion-header h2 {
+  font-size: 28px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.completion-icon {
+  font-size: 36px;
+  animation: bounce 1s infinite;
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.completion-body {
+  padding: 32px;
+  text-align: center;
+}
+
+.completed-quest-name {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--primary);
+  margin-bottom: 8px;
+}
+
+.completion-subtitle {
+  font-size: 18px;
+  color: #666;
+  margin-bottom: 24px;
+}
+
+.completion-rewards {
+  background: #f0fdf4;
+  border: 2px solid var(--success);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.completion-rewards h3 {
+  font-size: 16px;
+  color: var(--success);
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+.reward-item {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+
+.completion-new-quest {
+  background: #fef3e2;
+  border: 2px solid var(--accent);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.completion-new-quest h3 {
+  font-size: 16px;
+  color: var(--secondary);
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+.new-quest-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--primary);
+  margin-bottom: 12px;
+}
+
+.new-quest-recipe {
+  text-align: left;
+  font-size: 14px;
+}
+
+.new-quest-recipe p {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.new-quest-recipe .recipe-item {
+  display: inline-block;
+  background: white;
+  padding: 4px 10px;
+  border-radius: 6px;
+  margin: 4px 4px 4px 0;
+  font-weight: 500;
+}
+
+.completion-button {
+  width: 100%;
+  padding: 16px;
+  background: linear-gradient(135deg, var(--primary), var(--success));
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.completion-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+}
+
+.completion-button:active {
+  transform: translateY(0);
+}
+
 /* Scrollbar Styling */
 ::-webkit-scrollbar {
   width: 8px;

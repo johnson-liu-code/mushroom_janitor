@@ -114,15 +114,19 @@ class GameState {
     if (!this.nowRing.activeQuest) return null;
     
     const quest = this.nowRing.activeQuest;
-    let totalRequired = 0;
-    let totalHave = 0;
-
-    for (const [item, qty] of Object.entries(quest.recipe)) {
-      totalRequired += qty;
-      totalHave += Math.min(this.stockpile[item] || 0, qty);
+    
+    // Calculate bottleneck percentage (minimum ratio across all required resources)
+    const ratios = [];
+    for (const [item, required] of Object.entries(quest.recipe)) {
+      if (required > 0) {
+        const have = this.stockpile[item] || 0;
+        ratios.push(have / required);
+      }
     }
-
-    quest.percent = totalRequired > 0 ? Math.floor((totalHave / totalRequired) * 100) : 0;
+    
+    // Use minimum ratio (bottleneck resource determines progress)
+    const minRatio = ratios.length > 0 ? Math.min(...ratios) : 0;
+    quest.percent = Math.floor(100 * Math.min(minRatio, 1.0));
     
     if (quest.percent >= 100) {
       quest.status = QuestStatus.COMPLETED;
@@ -133,6 +137,14 @@ class GameState {
 
   // Vote management
   setActiveVote(vote) {
+    // Initialize tally as { optionName: count } format
+    if (!vote.tally) {
+      vote.tally = {};
+      vote.options.forEach(opt => vote.tally[opt] = 0);
+    }
+    if (!vote.votedPlayers) {
+      vote.votedPlayers = new Set();
+    }
     this.nowRing.activeVote = vote;
     this.votes.push(vote);
   }
@@ -147,7 +159,20 @@ class GameState {
       return false;
     }
 
-    vote.tally[playerId] = option;
+    // Check if player already voted
+    if (vote.votedPlayers.has(playerId)) {
+      return false;
+    }
+
+    // Increment option count
+    if (!vote.tally[option]) {
+      vote.tally[option] = 0;
+    }
+    vote.tally[option]++;
+    
+    // Track that player voted
+    vote.votedPlayers.add(playerId);
+    
     return true;
   }
 
@@ -157,16 +182,8 @@ class GameState {
     const vote = this.nowRing.activeVote;
     vote.status = VoteStatus.CLOSED;
 
-    // Count results
-    const results = {};
-    vote.options.forEach(opt => results[opt] = 0);
-    Object.values(vote.tally).forEach(opt => {
-      if (results.hasOwnProperty(opt)) {
-        results[opt]++;
-      }
-    });
-
-    return { vote, results };
+    // Tally already in correct format { optionName: count }
+    return { vote, results: vote.tally };
   }
 
   // Trade management

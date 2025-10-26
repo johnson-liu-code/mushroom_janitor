@@ -155,6 +155,10 @@ class MushroomVillageClient {
         this.updateStockpile(message.data.stockpile);
         break;
       
+      case 'QUEST_COMPLETED':
+        this.showQuestCompletion(message.data);
+        break;
+      
       case 'VOTE_STATUS':
         this.updateVote(message.data.vote);
         break;
@@ -375,6 +379,61 @@ class MushroomVillageClient {
           : ''}
       </div>
     `).join('');
+  }
+
+  showQuestCompletion(data) {
+    // Create celebration modal
+    const modal = document.createElement('div');
+    modal.className = 'completion-modal';
+    modal.innerHTML = `
+      <div class="completion-content">
+        <div class="completion-header">
+          <span class="completion-icon">🎉</span>
+          <h2>Quest Complete!</h2>
+          <span class="completion-icon">🎉</span>
+        </div>
+        
+        <div class="completion-body">
+          <p class="completed-quest-name">"${data.completedQuest.name}"</p>
+          <p class="completion-subtitle">is finished!</p>
+          
+          <div class="completion-rewards">
+            <h3>Rewards</h3>
+            <p class="reward-item">✨ ${data.rewards.charms} Charm added to village</p>
+          </div>
+          
+          <div class="completion-new-quest">
+            <h3>New Quest</h3>
+            <p class="new-quest-name">"${data.newQuest.name}"</p>
+            <div class="new-quest-recipe">
+              <p><strong>Needs:</strong></p>
+              ${Object.entries(data.newQuest.recipe).map(([item, qty]) => 
+                `<span class="recipe-item">${qty} ${item}</span>`
+              ).join(', ')}
+            </div>
+          </div>
+          
+          <button class="completion-button" onclick="client.closeCompletionModal()">
+            Continue
+          </button>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    // Add celebration message to chat
+    this.addSystemMessage({
+      text: `🎉 Quest "${data.completedQuest.name}" completed! The village earned ${data.rewards.charms} charm!`,
+      type: 'success'
+    });
+  }
+
+  closeCompletionModal() {
+    const modal = document.querySelector('.completion-modal');
+    if (modal) {
+      modal.remove();
+    }
   }
 }
 
