@@ -1,6 +1,7 @@
 // MycelialSteward - Unified Letta adapter for all backstage agents
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import normalizeLettaPatch from './letta_normalizer.js';
 
 /**
  * Unified Input Schema:
