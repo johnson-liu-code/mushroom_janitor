@@ -8,7 +8,8 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "test": "node --test test/**/*.test.js",
-    "smoke:tick": "node server/test/smoke_tick.js"
+    "smoke:tick": "node server/test/smoke_tick.js",
+    "smoke:elder": "node tools/smoke_elder.js"
   },
   "keywords": ["chat", "multiplayer", "websocket", "game"],
   "author": "",

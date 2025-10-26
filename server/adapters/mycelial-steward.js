@@ -56,19 +56,36 @@ import normalizeLettaPatch from './letta_normalizer.js';
 
 class MycelialSteward {
   constructor() {
-    this.mode = process.env.LLM_MODE || 'MOCK';
     this.apiKey = process.env.LETTA_API_KEY;
     this.baseUrl = process.env.LETTA_BASE_URL || 'https://api.letta.ai/v1';
+    
+    // LIVE mode requires both LLM_MODE=LIVE AND a valid API key
+    const llmMode = process.env.LLM_MODE;
+    const hasApiKey = !!this.apiKey;
+    
+    if (llmMode === 'LIVE' && hasApiKey) {
+      this.mode = 'LIVE';
+      this.mockReason = null;
+    } else {
+      this.mode = 'MOCK';
+      // Store reason for MOCK mode
+      if (llmMode !== 'LIVE') {
+        this.mockReason = 'LLM_MODE not set to LIVE';
+      } else if (!hasApiKey) {
+        this.mockReason = 'no LETTA_API_KEY configured';
+      } else {
+        this.mockReason = 'unknown';
+      }
+      
+      if (llmMode === 'LIVE' && !hasApiKey) {
+        console.warn('[MycelialSteward] LLM_MODE=LIVE but no LETTA_API_KEY found, using MOCK mode');
+      }
+    }
+    
     this.healthy = true;
     this.lastError = null;
     this.lastRequestId = null;
     this.systemPrompt = this.loadSystemPrompt();
-    
-    // Default to MOCK if no API key
-    if (!this.apiKey && this.mode === 'LIVE') {
-      console.warn('[MycelialSteward] No LETTA_API_KEY found, defaulting to MOCK mode');
-      this.mode = 'MOCK';
-    }
   }
 
   loadSystemPrompt() {
@@ -538,11 +555,18 @@ Always return valid JSON matching the output schema.`;
    * Get adapter status
    */
   getStatus() {
-    return {
-      mode: this.mode === 'LIVE' && this.apiKey ? 'LIVE' : 'MOCK',
+    const status = {
+      mode: this.mode,
       healthy: this.healthy,
       last_error: this.lastError
     };
+    
+    // Include reason when in MOCK mode
+    if (this.mode === 'MOCK' && this.mockReason) {
+      status.reason = this.mockReason;
+    }
+    
+    return status;
   }
 
   /**

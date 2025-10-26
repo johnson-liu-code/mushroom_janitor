@@ -32,6 +32,9 @@ class GameState {
     this.lastPulseTime = Date.now();
     this.elderLastSpoke = Date.now();
 
+    // Message history (in-memory)
+    this.messages = [];
+
     // Initialize with seed data
     this._seedInitialStones();
   }

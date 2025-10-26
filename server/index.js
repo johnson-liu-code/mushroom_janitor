@@ -84,6 +84,37 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // Debug endpoint: GET /debug/last-elder
+  if (req.url === '/debug/last-elder') {
+    const lastElder = gameState.messages
+      .filter(m => m.type === 'ELDER_SAY')
+      .slice(-1)[0] || null;
+    
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      message: lastElder
+    }));
+    return;
+  }
+
+  // Debug endpoint: POST /debug/run-tick
+  if (req.url === '/debug/run-tick' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk.toString());
+    req.on('end', async () => {
+      try {
+        const payload = body ? JSON.parse(body) : getDefaultTestPayload();
+        const result = await runDebugTick(payload);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: error.message }));
+      }
+    });
+    return;
+  }
+
   // Serve frontend
   if (req.url === '/' || req.url === '/index.html') {
     try {
@@ -591,10 +622,12 @@ async function serverTick() {
       try {
         const elderOutput = await speakNPC('elder_mycel', elderInput);
         
-        // Validate output
-        if (!elderOutput.message_text || !elderOutput.nudge?.startsWith('Next:')) {
-          throw new Error('elder_output_invalid');
-        }
+        // Validate + sanitize
+        const nudge = (elderOutput?.nudge && elderOutput.nudge.startsWith('Next:')) 
+          ? elderOutput.nudge 
+          : 'Next: Contribute one needed item.';
+        const text = (elderOutput?.message_text || 'The village moves by gentle steps.') + 
+          (elderOutput?.message_text?.includes('Next:') ? '' : `\n\n${nudge}`);
 
         // Store telemetry
         gameState.resetPulseCounter();
@@ -609,9 +642,17 @@ async function serverTick() {
           nudge: elderOutput.nudge
         });
 
+        // Push into message history
+        gameState.messages.push({
+          type: 'ELDER_SAY',
+          text,
+          nudge,
+          at: Date.now()
+        });
+
         // Broadcast Elder message
         broadcast(createMessage(MessageType.ELDER_SAY, {
-          text: elderOutput.message_text,
+          text,
           trigger: patch.cadence.reason || 'pulse',
           timestamp: Date.now()
         }));
@@ -621,15 +662,19 @@ async function serverTick() {
         console.error(`[Elder:${requestId}] Error - ${error.message}`);
         
         // Fallback message
-        const fallback = {
-          referenced_stones: [],
-          acknowledged_users: [],
-          nudge: 'Next: Contribute one needed item.',
-          message_text: 'The village moves by gentle steps.\n\nNext: Contribute one needed item.'
-        };
+        const fallbackText = 'The village moves by gentle steps.\n\nNext: Contribute one needed item.';
+        const fallbackNudge = 'Next: Contribute one needed item.';
+        
+        // Push into message history
+        gameState.messages.push({
+          type: 'ELDER_SAY',
+          text: fallbackText,
+          nudge: fallbackNudge,
+          at: Date.now()
+        });
 
         broadcast(createMessage(MessageType.ELDER_SAY, {
-          text: fallback.message_text,
+          text: fallbackText,
           trigger: 'fallback',
           timestamp: Date.now()
         }));
@@ -644,6 +689,139 @@ async function serverTick() {
   }
 }
 
+/**
+ * Get default test payload for debug endpoint
+ */
+function getDefaultTestPayload() {
+  return {
+    timestamp: Date.now(),
+    players: [
+      { id: 'lina', name: 'Lina', inventory: { moss: 2, cedar: 1, resin: 0, spores: 0, charms: 0 }, messageCount: 1 },
+      { id: 'rowan', name: 'Rowan', inventory: { moss: 1, cedar: 2, resin: 1, spores: 0, charms: 0 }, messageCount: 1 }
+    ],
+    stockpile: { moss: 3, cedar: 2, resin: 1, spores: 0, charms: 0 },
+    activeQuest: {
+      id: 'q1',
+      name: 'Bridge Across the Brook',
+      recipe: { cedar: 3, resin: 2 },
+      percent: 40
+    },
+    activeVote: {
+      id: 'v1',
+      topic: 'Bridge material',
+      options: ['Moss Rope', 'Cedar Plank'],
+      tally: { 'lina': 'Moss Rope', 'rowan': 'Cedar Plank' },
+      closesAt: Date.now() + 60000,
+      status: 'OPEN'
+    },
+    openOffers: [],
+    memoryStones: gameState.getMemoryStones(),
+    recentActions: [{ text: '@Lina asked about rope safety' }, { text: '@Rowan attempted a trade' }],
+    journalQueue: [{ id: 'j12', playerId: 'lina', text: 'The brook teaches balance.', timestamp: Date.now() - 6000000 }],
+    context: {
+      messagesSincePulse: 2,
+      timeSincePulse: 15000,
+      activeWarnings: [],
+      priorQuestPercent: 40
+    }
+  };
+}
+
+/**
+ * Run debug tick - full loop: Letta → normalize → applyPatch → Elder
+ */
+async function runDebugTick(payload) {
+  const tickId = `debug_${Date.now()}`;
+  
+  try {
+    // Call Letta (LIVE if configured)
+    const rawPatch = await mycelialSteward.sendTick(payload);
+
+    // Build tick context for normalizer
+    const tickContext = {
+      distilledQuestion: 'Is moss rope safe in rain?',
+      journalsById: {}
+    };
+    
+    if (payload.journalQueue) {
+      for (const journal of payload.journalQueue) {
+        tickContext.journalsById[journal.id] = journal;
+      }
+    }
+
+    // Normalize patch
+    const patch = normalizeLettaPatch(rawPatch, tickContext);
+
+    // Apply patch to state
+    const log = {
+      warn: (msg) => console.warn(`[${tickId}] ${msg}`),
+      info: (msg) => console.log(`[${tickId}] ${msg}`)
+    };
+    
+    applyPatch(gameState, patch, { log });
+
+    // Call Elder if cadence says to
+    let elderMessage = null;
+    if (patch.cadence?.should_elder_speak) {
+      const elderInput = buildElderInput(gameState, patch.cadence, {
+        top_recent_actions: payload.recentActions?.map(a => a.text || String(a)) || [],
+        last_messages_summary: ['Direct question about moss rope in rain', 'Vote 1–1 tie'],
+        safety_notes: patch.safety?.notes_for_elder || null
+      });
+
+      try {
+        const out = await speakNPC('elder_mycel', elderInput);
+        
+        // Validate + sanitize
+        const nudge = (out?.nudge && out.nudge.startsWith('Next:')) 
+          ? out.nudge 
+          : 'Next: Contribute one needed item.';
+        const text = (out?.message_text || 'The village moves by gentle steps.') + 
+          (out?.message_text?.includes('Next:') ? '' : `\n\n${nudge}`);
+        
+        // Push into message history
+        elderMessage = {
+          type: 'ELDER_SAY',
+          text,
+          nudge,
+          at: Date.now()
+        };
+        gameState.messages.push(elderMessage);
+        
+      } catch (error) {
+        console.error(`[${tickId}] Elder error: ${error.message}`);
+        // Fallback
+        elderMessage = {
+          type: 'ELDER_SAY',
+          text: 'The village moves by gentle steps.\n\nNext: Contribute one needed item.',
+          nudge: 'Next: Contribute one needed item.',
+          at: Date.now()
+        };
+        gameState.messages.push(elderMessage);
+      }
+    }
+
+    // Build response
+    return {
+      tickApplied: true,
+      cadence: patch.cadence,
+      vote: gameState.nowRing.activeVote,
+      quest: {
+        percent: gameState.nowRing.activeQuest?.percent || 0,
+        needs: gameState.nowRing.activeQuest?.needs || []
+      },
+      trades: {
+        open: gameState.getOpenOffers().length
+      },
+      stones: gameState.canonRing.map(s => s.title),
+      elder: elderMessage
+    };
+  } catch (error) {
+    console.error(`[${tickId}] Error:`, error);
+    throw error;
+  }
+}
+
 // Run server tick every 10 seconds
 setInterval(serverTick, 10000);
 
@@ -651,7 +829,21 @@ setInterval(serverTick, 10000);
 server.listen(PORT, () => {
   console.log(`🍄 Mushroom Village server running on port ${PORT}`);
   console.log(`📍 Local: http://localhost:${PORT}`);
-  console.log(`🤖 LLM Mode: ${janitorAdapter.getStatus().active}`);
+  
+  // Log LLM Mode and API key status
+  const llmMode = process.env.LLM_MODE || 'MOCK';
+  const lettaKey = process.env.LETTA_API_KEY;
+  const lettaKeyMasked = lettaKey ? `****${lettaKey.slice(-4)}` : 'not set';
+  
+  console.log(`🔧 LLM_MODE: ${llmMode}`);
+  console.log(`🔑 LETTA_API_KEY: ${lettaKeyMasked}`);
+  
+  const stewardStatus = mycelialSteward.getStatus();
+  console.log(`🍄 MycelialSteward: ${stewardStatus.mode}${stewardStatus.reason ? ` (${stewardStatus.reason})` : ''}`);
+  
+  const elderStatus = getElderStatus();
+  console.log(`👴 Elder Provider: ${elderStatus.provider}`);
+  
   console.log('');
   
   // Setup demo scenario
