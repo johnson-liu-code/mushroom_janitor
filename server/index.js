@@ -237,6 +237,34 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // Dev endpoint: POST /dev/spawn-dummy (for testing)
+  if (req.url === '/dev/spawn-dummy' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk.toString());
+    req.on('end', () => {
+      try {
+        const data = body ? JSON.parse(body) : {};
+        const dummyId = `player_${Date.now()}_dummy${Math.random().toString(36).substr(2, 9)}`;
+        const dummyName = data.name || `TestUser${Math.floor(Math.random() * 100)}`;
+        
+        const dummyPlayer = createPlayer(dummyId, dummyName);
+        gameState.addPlayer(dummyPlayer);
+        
+        // Broadcast to all connected WebSocket clients
+        broadcast(createMessage(MessageType.SYSTEM_NOTE, {
+          text: `${dummyName} has joined the village (test user).`
+        }));
+        
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, player: dummyPlayer }));
+      } catch (error) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: error.message }));
+      }
+    });
+    return;
+  }
+
   // API endpoint: POST /api/chat
   if (req.url === '/api/chat' && req.method === 'POST') {
     let body = '';
@@ -548,10 +576,22 @@ async function executeIntent(ws, client, intent) {
       gameState.addScratchAction(action);
       gameState.addRecentAction({ player: client.playerName, action: 'gather', item, amount });
       
+      // Get fresh player data after inventory update
+      const updatedPlayer = gameState.getPlayer(client.playerId);
+      
       sendToClient(ws, createMessage(MessageType.SYSTEM_NOTE, {
-        text: `You gathered ${amount} ${item}. Total: ${player.inventory[item]}`,
+        text: `You gathered ${amount} ${item}. Total: ${updatedPlayer.inventory[item]}`,
         type: 'success',
-        inventory: player.inventory
+        inventory: updatedPlayer.inventory
+      }));
+      
+      // Broadcast inventory update to all clients with fresh data
+      console.log(`[executeIntent] Broadcasting inventory for ${client.playerName}: ${JSON.stringify(updatedPlayer.inventory)}`);
+      broadcast(createMessage(MessageType.SYSTEM_NOTE, {
+        text: `${client.playerName} gathered ${amount} ${item}.`,
+        type: 'info',
+        inventory: updatedPlayer.inventory,
+        playerId: client.playerId
       }));
       break;
     }
@@ -797,23 +837,16 @@ async function serverTick() {
 
     console.log(`[${tickId}] Starting server tick - stones: ${payload.memoryStones.length}, players: ${payload.players.length}, batched messages: ${batchedMessages.length}`);
 
-    // Call sendTick to get raw patch
-    const rawPatch = await mycelialSteward.sendTick(payload);
-
-    // Build tick context for normalizer
-    const tickContext = {
-      distilledQuestion: null,
-      journalsById: {}
-    };
+    // Call sendTick - returns already normalized patch
+    const patch = await mycelialSteward.sendTick(payload);
     
-    // Build journals lookup map
-    const pendingJournals = lichenArchivist.getPendingJournals();
-    for (const journal of pendingJournals) {
-      tickContext.journalsById[journal.id] = journal;
-    }
-
-    // Normalize patch
-    const patch = normalizeLettaPatch(rawPatch, tickContext);
+    // Debug: Log patch structure
+    console.log(`[${tickId}] Patch structure:`, JSON.stringify({
+      has_npc_message: !!patch.npc_message,
+      has_elder_message: !!patch.elder_message,
+      npc_message: patch.npc_message,
+      elder_message: patch.elder_message
+    }, null, 2));
 
     // Apply patch to state
     const log = {
@@ -849,9 +882,24 @@ async function serverTick() {
       trades: sporocarpBroker.getOpenOffers()
     }));
 
-    // Elder speaks - Letta now handles all orchestration
-    if (patch.elder_message) {
-      broadcast(createMessage(MessageType.ELDER_SAY, patch.elder_message));
+    // NPC speaks - Letta handles NPC orchestration
+    // Broadcast if npc_message exists with non-empty text
+    if (patch.npc_message && patch.npc_message.text && patch.npc_message.text.trim()) {
+      console.log(`[${tickId}] Broadcasting NPC message from ${patch.npc_message.npc}: ${patch.npc_message.text}`);
+      broadcast(createMessage(MessageType.ELDER_SAY, {
+        text: patch.npc_message.text,
+        npc: patch.npc_message.npc,
+        timestamp: Date.now()
+      }));
+    }
+    
+    // Legacy elder_message support (in case Letta returns this instead)
+    if (patch.elder_message && patch.elder_message.text) {
+      console.log(`[${tickId}] Broadcasting Elder message: ${patch.elder_message.text}`);
+      broadcast(createMessage(MessageType.ELDER_SAY, {
+        text: patch.elder_message.text,
+        timestamp: Date.now()
+      }));
     }
 
   } catch (error) {

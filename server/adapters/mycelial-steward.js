@@ -610,6 +610,18 @@ Always return valid JSON matching the output schema.`;
         normalized.elder_message = null;
       }
 
+      // 9. NPC_MESSAGE: NPC speaks (Letta orchestration)
+      const npcMsg = parsed.npc_message || null;
+      if (npcMsg) {
+        normalized.npc_message = {
+          npc: npcMsg.npc || 'Elder Mycel',
+          text: npcMsg.text || '',
+          should_npc_speak: Boolean(npcMsg.should_npc_speak)
+        };
+      } else {
+        normalized.npc_message = null;
+      }
+
       return normalized;
     } catch (error) {
       console.error('[MycelialSteward] Normalization error:', error.message);
@@ -644,7 +656,8 @@ Always return valid JSON matching the output schema.`;
         referenced_messages: [],
         conversation_thread: ''
       },
-        elder_message: null  // ADD THIS LINE
+      elder_message: null,
+      npc_message: null
     };
   }
 

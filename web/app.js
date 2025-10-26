@@ -41,6 +41,96 @@ class MushroomVillageClient {
     document.getElementById('message-input').addEventListener('keypress', (e) => {
       if (e.key === 'Enter') this.sendMessage();
     });
+    
+    // Setup tab switching
+    this.setupTabs();
+    
+    // Initialize donation amounts
+    this.donateAmounts = {
+      moss: 1,
+      cedar: 1,
+      resin: 1,
+      spores: 1
+    };
+  }
+
+  setupTabs() {
+    const tabButtons = document.querySelectorAll('.tab-btn');
+    tabButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tabName = btn.dataset.tab;
+        this.switchTab(tabName);
+      });
+    });
+  }
+
+  switchTab(tabName) {
+    // Update button states
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.classList.remove('active');
+      if (btn.dataset.tab === tabName) {
+        btn.classList.add('active');
+      }
+    });
+    
+    // Update panel visibility
+    document.querySelectorAll('.tab-panel').forEach(panel => {
+      panel.classList.remove('active');
+    });
+    document.getElementById(`tab-${tabName}`).classList.add('active');
+    
+    // Re-render village map when village tab is opened
+    if (tabName === 'village') {
+      setTimeout(() => {
+        if (this.villageMap && this.villageMap.canvas) {
+          const rect = this.villageMap.canvas.getBoundingClientRect();
+          this.villageMap.canvas.width = rect.width;
+          this.villageMap.canvas.height = rect.height;
+          this.renderVillageMap();
+        } else {
+          this.initVillageMap();
+        }
+      }, 50);
+    }
+  }
+
+  incrementDonateAmount(resource) {
+    const player = this.getPlayerInventory();
+    const maxAmount = player?.[resource] || 99;
+    
+    if (this.donateAmounts[resource] < maxAmount) {
+      this.donateAmounts[resource]++;
+      document.getElementById(`donate-amount-${resource}`).textContent = this.donateAmounts[resource];
+    }
+  }
+
+  decrementDonateAmount(resource) {
+    if (this.donateAmounts[resource] > 1) {
+      this.donateAmounts[resource]--;
+      document.getElementById(`donate-amount-${resource}`).textContent = this.donateAmounts[resource];
+    }
+  }
+
+  donateWithAmount(resource) {
+    const amount = this.donateAmounts[resource];
+    this.send({
+      type: 'USER_CHAT',
+      text: `/donate ${resource} x${amount}`
+    });
+    
+    // Reset to 1
+    this.donateAmounts[resource] = 1;
+    document.getElementById(`donate-amount-${resource}`).textContent = '1';
+  }
+
+  getPlayerInventory() {
+    // This will be populated when inventory updates are received
+    return {
+      moss: parseInt(document.getElementById('inv-moss').textContent) || 0,
+      cedar: parseInt(document.getElementById('inv-cedar').textContent) || 0,
+      resin: parseInt(document.getElementById('inv-resin').textContent) || 0,
+      spores: parseInt(document.getElementById('inv-spores').textContent) || 0
+    };
   }
 
   showRegistrationModal() {
@@ -211,6 +301,20 @@ class MushroomVillageClient {
     msgDiv.textContent = data.text;
     messagesDiv.appendChild(msgDiv);
     this.scrollToBottom();
+    
+    // Update inventory if provided and it's for this player
+    console.log('[addSystemMessage] Received system message:', {
+      hasInventory: !!data.inventory,
+      playerId: data.playerId,
+      myPlayerId: this.playerId,
+      matches: data.playerId === this.playerId,
+      inventory: data.inventory
+    });
+    
+    if (data.inventory && data.playerId === this.playerId) {
+      console.log('[addSystemMessage] Updating inventory:', data.inventory);
+      this.updateInventory(data.inventory);
+    }
   }
 
   addUserMessage(data) {
@@ -318,14 +422,29 @@ class MushroomVillageClient {
     document.getElementById('want-qty').value = '1';
   }
 
-  // NEW: Update player inventory display
+  // Update player inventory display
   updateInventory(inventory) {
     if (!inventory) return;
     
-    document.getElementById('inv-moss').textContent = inventory.moss || 0;
-    document.getElementById('inv-cedar').textContent = inventory.cedar || 0;
-    document.getElementById('inv-resin').textContent = inventory.resin || 0;
-    document.getElementById('inv-spores').textContent = inventory.spores || 0;
+    // Update all inventory displays
+    const items = ['moss', 'cedar', 'resin', 'spores'];
+    items.forEach(item => {
+      const value = inventory[item] || 0;
+      const elem = document.getElementById(`inv-${item}`);
+      if (elem) {
+        elem.textContent = value;
+      }
+      
+      // Update donate amount max limit
+      const donateElem = document.getElementById(`donate-amount-${item}`);
+      if (donateElem) {
+        const currentAmount = this.donateAmounts[item];
+        if (currentAmount > value) {
+          this.donateAmounts[item] = Math.max(1, value);
+          donateElem.textContent = this.donateAmounts[item];
+        }
+      }
+    });
   }
 
   updateQuest(quest) {
@@ -637,12 +756,23 @@ class MushroomVillageClient {
     const game = this.sporeGame;
     game.isRunning = true;
     game.score = 0;
-    game.timeLeft = 10;
+    game.timeLeft = 15;
     game.spores = [];
+    
+    // Define spore colors
+    const sporeColors = [
+      { name: 'PURPLE', hue: 280, label: '💜' },
+      { name: 'BLUE', hue: 220, label: '💙' },
+      { name: 'PINK', hue: 320, label: '💗' }
+    ];
+    
+    // Choose target color
+    game.targetColor = sporeColors[Math.floor(Math.random() * sporeColors.length)];
+    game.colorChangeTime = Date.now() + 5000; // Change color every 5 seconds
     
     // Update UI
     document.getElementById('spore-score').textContent = '0';
-    document.getElementById('spore-time').textContent = '10';
+    document.getElementById('spore-time').textContent = '15';
     
     // Add click handler
     game.canvas.onclick = (e) => this.handleSporeClick(e);
@@ -654,15 +784,24 @@ class MushroomVillageClient {
         return;
       }
       
-      // Spawn 1-2 spores
+      // Change target color every 5 seconds
+      if (Date.now() >= game.colorChangeTime) {
+        game.targetColor = sporeColors[Math.floor(Math.random() * sporeColors.length)];
+        game.colorChangeTime = Date.now() + 5000;
+      }
+      
+      // Spawn 1-2 spores with random colors
       const count = Math.random() > 0.5 ? 2 : 1;
       for (let i = 0; i < count; i++) {
+        const colorChoice = sporeColors[Math.floor(Math.random() * sporeColors.length)];
         game.spores.push({
           x: Math.random() * (game.canvas.width - 30) + 15,
           y: -20,
           radius: 12 + Math.random() * 8,
-          speed: 1 + Math.random() * 1.5,
-          color: `hsl(${Math.random() * 60 + 260}, 60%, 70%)`
+          speed: 0.5 + Math.random() * 0.8,
+          color: `hsl(${colorChoice.hue}, 60%, 70%)`,
+          colorName: colorChoice.name,
+          hue: colorChoice.hue
         });
       }
     }, 800);
@@ -691,8 +830,14 @@ class MushroomVillageClient {
       }
       
       // Clear canvas
-      game.ctx.fillStyle = 'linear-gradient(180deg, #F0F8EF 0%, #FAFAF8 100%)';
+      game.ctx.fillStyle = '#F0F8EF';
       game.ctx.fillRect(0, 0, game.canvas.width, game.canvas.height);
+      
+      // Draw instructions with target color
+      game.ctx.fillStyle = '#3A3A3A';
+      game.ctx.font = 'bold 20px Nunito';
+      game.ctx.textAlign = 'center';
+      game.ctx.fillText(`Catch ${game.targetColor.label} ${game.targetColor.name} spores!`, game.canvas.width / 2, 30);
       
       // Update and draw spores
       game.spores = game.spores.filter(spore => {
@@ -741,20 +886,33 @@ class MushroomVillageClient {
       const distance = Math.sqrt((x - spore.x) ** 2 + (y - spore.y) ** 2);
       
       if (distance < spore.radius) {
-        // Hit!
-        game.score++;
-        document.getElementById('spore-score').textContent = game.score;
+        // Check if correct color
+        if (spore.colorName === game.targetColor.name) {
+          // Correct color - gain point!
+          game.score++;
+          document.getElementById('spore-score').textContent = game.score;
+          
+          // Visual feedback - green
+          game.ctx.beginPath();
+          game.ctx.arc(spore.x, spore.y, spore.radius * 1.5, 0, Math.PI * 2);
+          game.ctx.strokeStyle = '#7A9B76';
+          game.ctx.lineWidth = 3;
+          game.ctx.stroke();
+        } else {
+          // Wrong color - lose point!
+          game.score = Math.max(0, game.score - 1);
+          document.getElementById('spore-score').textContent = game.score;
+          
+          // Visual feedback - red
+          game.ctx.beginPath();
+          game.ctx.arc(spore.x, spore.y, spore.radius * 1.5, 0, Math.PI * 2);
+          game.ctx.strokeStyle = '#D4756E';
+          game.ctx.lineWidth = 3;
+          game.ctx.stroke();
+        }
         
         // Remove spore
         game.spores.splice(i, 1);
-        
-        // Visual feedback
-        game.ctx.beginPath();
-        game.ctx.arc(spore.x, spore.y, spore.radius * 1.5, 0, Math.PI * 2);
-        game.ctx.strokeStyle = '#7A9B76';
-        game.ctx.lineWidth = 3;
-        game.ctx.stroke();
-        
         break;
       }
     }
@@ -768,11 +926,11 @@ class MushroomVillageClient {
       cancelAnimationFrame(game.animationFrame);
     }
     
-    // Send contribution command with score
+    // Send gather command - resources go to player inventory
     if (game.score > 0) {
       this.send({
         type: 'USER_CHAT',
-        text: `/contribute spores x${game.score}`
+        text: `/gather spores x${game.score}`
       });
     }
     
@@ -919,12 +1077,24 @@ class MushroomVillageClient {
   endMossGame() {
     this.mossGame.isRunning = false;
     
-    if (this.mossGame.score > 0) {
+    const yield_amt = this.mossGame.score * 2;
+    
+    if (yield_amt > 0) {
       this.send({
         type: 'USER_CHAT',
-        text: `/contribute moss x${this.mossGame.score * 2}`
+        text: `/gather moss x${yield_amt}`
       });
     }
+    
+    // Show completion message on grid
+    const grid = document.getElementById('moss-game-grid');
+    grid.innerHTML = `
+      <div style="grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px;">
+        <h3 style="color: #7A9B76; font-size: 24px; margin-bottom: 10px;">Game Complete!</h3>
+        <p style="font-size: 18px;">Matches: ${this.mossGame.score}/6</p>
+        <p style="font-size: 18px;">Collected: ${yield_amt} moss</p>
+      </div>
+    `;
     
     this.startCooldown('moss');
   }
@@ -948,10 +1118,12 @@ class MushroomVillageClient {
       chops: 0,
       totalChops: 10,
       hits: 0,
+      consecutiveHits: 0,
       targetPos: 0.5,
       indicatorPos: 0,
       direction: 1,
-      speed: 0.02,
+      speed: 0.005,
+      hitZoneSize: 0.25,
       isRunning: true,
       waiting: true
     };
@@ -990,10 +1162,11 @@ class MushroomVillageClient {
     ctx.fillStyle = '#E0E0E0';
     ctx.fillRect(50, barY, w - 100, barHeight);
     
-    // Draw target zone
+    // Draw target zone (size based on difficulty)
     const targetX = 50 + (w - 100) * game.targetPos;
+    const zoneWidth = (w - 100) * game.hitZoneSize;
     ctx.fillStyle = 'rgba(122, 155, 118, 0.3)';
-    ctx.fillRect(targetX - 30, barY, 60, barHeight);
+    ctx.fillRect(targetX - zoneWidth/2, barY, zoneWidth, barHeight);
     
     // Draw indicator
     if (game.waiting) {
@@ -1007,11 +1180,18 @@ class MushroomVillageClient {
     ctx.fillStyle = '#7A9B76';
     ctx.fillRect(indicatorX - 5, barY - 10, 10, barHeight + 20);
     
-    // Draw instructions
+    // Draw instructions and difficulty indicator
     ctx.fillStyle = '#3A3A3A';
     ctx.font = '16px Nunito';
     ctx.textAlign = 'center';
-    ctx.fillText('Click when indicator is in green zone!', w/2, 50);
+    ctx.fillText('Click when indicator is in green zone!', w/2, 40);
+    
+    // Show consecutive hits streak
+    if (game.consecutiveHits > 0) {
+      ctx.fillStyle = '#7A9B76';
+      ctx.font = 'bold 14px Quicksand';
+      ctx.fillText(`🔥 Streak: ${game.consecutiveHits} (Getting harder!)`, w/2, 65);
+    }
     
     requestAnimationFrame(() => this.animateCedarChop());
   }
@@ -1023,11 +1203,24 @@ class MushroomVillageClient {
     game.waiting = false;
     game.chops++;
     
-    // Check accuracy
+    // Check accuracy (use current hit zone size)
     const distance = Math.abs(game.indicatorPos - game.targetPos);
-    const isHit = distance < 0.15;
+    const isHit = distance < game.hitZoneSize / 2;
     
-    if (isHit) game.hits++;
+    if (isHit) {
+      game.hits++;
+      game.consecutiveHits++;
+      
+      // Progressive difficulty: speed up and shrink hit zone on consecutive hits
+      game.speed = Math.min(0.025, game.speed + 0.002);
+      game.hitZoneSize = Math.max(0.08, game.hitZoneSize - 0.02);
+    } else {
+      // Reset streak on miss
+      game.consecutiveHits = 0;
+      // Reset difficulty slightly
+      game.speed = Math.max(0.005, game.speed - 0.001);
+      game.hitZoneSize = Math.min(0.25, game.hitZoneSize + 0.01);
+    }
     
     const accuracy = Math.round((game.hits / game.chops) * 100);
     document.getElementById('cedar-chops').textContent = `${game.chops}/10`;
@@ -1040,7 +1233,6 @@ class MushroomVillageClient {
       setTimeout(() => {
         game.waiting = true;
         game.targetPos = 0.2 + Math.random() * 0.6;
-        game.speed = 0.015 + Math.random() * 0.015;
       }, 500);
     }
   }
@@ -1052,7 +1244,7 @@ class MushroomVillageClient {
     if (yield_amt > 0) {
       this.send({
         type: 'USER_CHAT',
-        text: `/contribute cedar x${yield_amt}`
+        text: `/gather cedar x${yield_amt}`
       });
     }
     
@@ -1066,7 +1258,7 @@ class MushroomVillageClient {
     document.getElementById('cedar-game-panel').style.display = 'none';
   }
 
-  // RESIN FLOW GAME
+  // RESIN COLLECTION GAME - Redesigned as a bucket catching game
   startResinGame() {
     if (this.isCooldown('resin')) return;
     
@@ -1075,14 +1267,14 @@ class MushroomVillageClient {
     this.resinGame = {
       canvas: document.getElementById('resin-canvas'),
       ctx: null,
-      paths: [],
-      timeLeft: 15,
+      bucketX: 0,
+      bucketWidth: 80,
+      bucketHeight: 30,
+      drops: [],
       score: 0,
-      totalDistance: 0,
-      tracedDistance: 0,
-      isRunning: true,
-      isDrawing: false,
-      lastPos: null
+      missed: 0,
+      timeLeft: 20,
+      isRunning: true
     };
     
     this.resinGame.ctx = this.resinGame.canvas.getContext('2d');
@@ -1090,160 +1282,187 @@ class MushroomVillageClient {
     this.resinGame.canvas.width = rect.width;
     this.resinGame.canvas.height = rect.height;
     
-    // Generate paths
-    this.generateResinPaths();
+    // Initialize bucket position
+    this.resinGame.bucketX = (this.resinGame.canvas.width - this.resinGame.bucketWidth) / 2;
     
-    // Mouse handlers
-    this.resinGame.canvas.onmousedown = (e) => this.startResinTrace(e);
-    this.resinGame.canvas.onmousemove = (e) => this.continueResinTrace(e);
-    this.resinGame.canvas.onmouseup = () => this.endResinTrace();
+    // Mouse/touch control
+    this.resinGame.canvas.onmousemove = (e) => this.moveResinBucket(e);
+    this.resinGame.canvas.ontouchmove = (e) => {
+      e.preventDefault();
+      this.moveResinBucket(e.touches[0]);
+    };
     
-    // Timer
-    const interval = setInterval(() => {
-      if (!this.resinGame.isRunning) {
-        clearInterval(interval);
-        return;
-      }
-      
-      this.resinGame.timeLeft--;
-      document.getElementById('resin-time').textContent = this.resinGame.timeLeft;
-      
-      if (this.resinGame.timeLeft <= 0) {
-        this.endResinGame();
-        clearInterval(interval);
-      }
-    }, 1000);
-    
-    this.animateResinFlow();
+    // Start game
+    this.runResinGame();
   }
 
-  generateResinPaths() {
-    const game = this.resinGame;
-    const w = game.canvas.width;
-    const h = game.canvas.height;
-    
-    // Create 3 flowing paths
-    for (let i = 0; i < 3; i++) {
-      const path = [];
-      const startX = (w / 4) * (i + 1);
-      let x = startX;
-      let y = 50;
-      
-      while (y < h - 50) {
-        path.push({x, y});
-        y += 20 + Math.random() * 20;
-        x += (Math.random() - 0.5) * 40;
-        x = Math.max(20, Math.min(w - 20, x));
-      }
-      
-      game.paths.push({points: path, traced: []});
-      
-      // Calculate total distance
-      for (let j = 1; j < path.length; j++) {
-        const dx = path[j].x - path[j-1].x;
-        const dy = path[j].y - path[j-1].y;
-        game.totalDistance += Math.sqrt(dx*dx + dy*dy);
-      }
-    }
-  }
-
-  animateResinFlow() {
+  moveResinBucket(e) {
     const game = this.resinGame;
     if (!game.isRunning) return;
     
-    const ctx = game.ctx;
-    ctx.fillStyle = '#FAFAF8';
-    ctx.fillRect(0, 0, game.canvas.width, game.canvas.height);
-    
-    // Draw paths
-    game.paths.forEach(path => {
-      ctx.strokeStyle = '#E8B869';
-      ctx.lineWidth = 6;
-      ctx.lineCap = 'round';
-      ctx.globalAlpha = 0.3;
-      
-      ctx.beginPath();
-      path.points.forEach((p, i) => {
-        if (i === 0) ctx.moveTo(p.x, p.y);
-        else ctx.lineTo(p.x, p.y);
-      });
-      ctx.stroke();
-      
-      // Draw traced portions
-      ctx.strokeStyle = '#7A9B76';
-      ctx.globalAlpha = 0.8;
-      path.traced.forEach(segment => {
-        ctx.beginPath();
-        ctx.moveTo(segment.from.x, segment.from.y);
-        ctx.lineTo(segment.to.x, segment.to.y);
-        ctx.stroke();
-      });
-    });
-    
-    ctx.globalAlpha = 1;
-    
-    requestAnimationFrame(() => this.animateResinFlow());
-  }
-
-  startResinTrace(e) {
-    const rect = this.resinGame.canvas.getBoundingClientRect();
-    this.resinGame.isDrawing = true;
-    this.resinGame.lastPos = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    };
-  }
-
-  continueResinTrace(e) {
-    const game = this.resinGame;
-    if (!game.isDrawing || !game.isRunning) return;
-    
     const rect = game.canvas.getBoundingClientRect();
-    const pos = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    };
+    const mouseX = e.clientX - rect.left;
     
-    // Check if near any path
-    game.paths.forEach(path => {
-      path.points.forEach((point, i) => {
-        const dx = pos.x - point.x;
-        const dy = pos.y - point.y;
-        const distance = Math.sqrt(dx*dx + dy*dy);
-        
-        if (distance < 15 && game.lastPos) {
-          const segment = {from: {...game.lastPos}, to: {...pos}};
-          path.traced.push(segment);
-          
-          const segDist = Math.sqrt((pos.x - game.lastPos.x)**2 + (pos.y - game.lastPos.y)**2);
-          game.tracedDistance += segDist;
-        }
-      });
-    });
-    
-    game.lastPos = pos;
-    
-    // Update accuracy
-    const accuracy = Math.min(100, Math.round((game.tracedDistance / game.totalDistance) * 100));
-    document.getElementById('resin-accuracy').textContent = `${accuracy}%`;
+    // Center bucket on mouse position
+    game.bucketX = Math.max(0, Math.min(game.canvas.width - game.bucketWidth, mouseX - game.bucketWidth / 2));
   }
 
-  endResinTrace() {
-    this.resinGame.isDrawing = false;
-    this.resinGame.lastPos = null;
+  runResinGame() {
+    const game = this.resinGame;
+    game.score = 0;
+    game.missed = 0;
+    
+    document.getElementById('resin-accuracy').textContent = '0';
+    document.getElementById('resin-time').textContent = '20';
+    
+    // Spawn resin drops
+    const spawnInterval = setInterval(() => {
+      if (!game.isRunning) {
+        clearInterval(spawnInterval);
+        return;
+      }
+      
+      // Spawn 1-2 drops
+      const count = Math.random() > 0.6 ? 2 : 1;
+      for (let i = 0; i < count; i++) {
+        game.drops.push({
+          x: 20 + Math.random() * (game.canvas.width - 40),
+          y: -20,
+          speed: 1.2 + Math.random() * 0.8,
+          size: 8 + Math.random() * 6,
+          wobble: Math.random() * Math.PI * 2
+        });
+      }
+    }, 1000);
+    
+    // Timer
+    const timerInterval = setInterval(() => {
+      if (!game.isRunning) {
+        clearInterval(timerInterval);
+        return;
+      }
+      
+      game.timeLeft--;
+      document.getElementById('resin-time').textContent = game.timeLeft;
+      
+      if (game.timeLeft <= 0) {
+        this.endResinGame();
+        clearInterval(timerInterval);
+        clearInterval(spawnInterval);
+      }
+    }, 1000);
+    
+    // Animation loop
+    const animate = () => {
+      if (!game.isRunning) return;
+      
+      const ctx = game.ctx;
+      const w = game.canvas.width;
+      const h = game.canvas.height;
+      
+      // Clear
+      ctx.fillStyle = '#FAF8F5';
+      ctx.fillRect(0, 0, w, h);
+      
+      // Draw trees in background
+      ctx.fillStyle = 'rgba(139, 115, 85, 0.2)';
+      for (let i = 0; i < 3; i++) {
+        const treeX = (w / 4) * (i + 1);
+        ctx.fillRect(treeX - 15, 30, 30, 80);
+      }
+      
+      // Update and draw drops
+      game.drops = game.drops.filter(drop => {
+        drop.y += drop.speed;
+        drop.wobble += 0.05;
+        
+        // Check if caught
+        const bucketY = h - 60;
+        if (drop.y >= bucketY && drop.y <= bucketY + game.bucketHeight) {
+          if (drop.x >= game.bucketX && drop.x <= game.bucketX + game.bucketWidth) {
+            game.score++;
+            document.getElementById('resin-accuracy').textContent = game.score;
+            return false; // Remove drop
+          }
+        }
+        
+        // Check if missed
+        if (drop.y > h + 20) {
+          game.missed++;
+          return false;
+        }
+        
+        // Draw drop with wobble
+        const wobbleOffset = Math.sin(drop.wobble) * 3;
+        ctx.fillStyle = '#E8B869';
+        ctx.beginPath();
+        ctx.ellipse(drop.x + wobbleOffset, drop.y, drop.size, drop.size * 1.3, 0, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Highlight
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.beginPath();
+        ctx.arc(drop.x + wobbleOffset - drop.size * 0.3, drop.y - drop.size * 0.3, drop.size * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+        
+        return true;
+      });
+      
+      // Draw bucket
+      const bucketY = h - 60;
+      
+      // Bucket shadow
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+      ctx.fillRect(game.bucketX + 5, bucketY + 5, game.bucketWidth, game.bucketHeight);
+      
+      // Bucket body
+      ctx.fillStyle = '#8B7355';
+      ctx.fillRect(game.bucketX, bucketY, game.bucketWidth, game.bucketHeight);
+      
+      // Bucket rim
+      ctx.fillStyle = '#A0896A';
+      ctx.fillRect(game.bucketX - 5, bucketY - 5, game.bucketWidth + 10, 8);
+      
+      // Bucket interior
+      ctx.fillStyle = '#6A5D4F';
+      ctx.fillRect(game.bucketX + 5, bucketY + 3, game.bucketWidth - 10, game.bucketHeight - 8);
+      
+      // Instructions
+      ctx.fillStyle = '#3A3A3A';
+      ctx.font = '16px Nunito';
+      ctx.textAlign = 'center';
+      ctx.fillText('Move your mouse to catch resin drops!', w / 2, 25);
+      
+      requestAnimationFrame(animate);
+    };
+    
+    animate();
   }
 
   endResinGame() {
     this.resinGame.isRunning = false;
-    const accuracy = Math.min(100, Math.round((this.resinGame.tracedDistance / this.resinGame.totalDistance) * 100));
-    const yield_amt = Math.max(1, Math.round(accuracy / 10));
+    const yield_amt = Math.max(1, this.resinGame.score);
     
     if (yield_amt > 0) {
       this.send({
         type: 'USER_CHAT',
-        text: `/contribute resin x${yield_amt}`
+        text: `/gather resin x${yield_amt}`
       });
     }
+    
+    // Show result
+    const ctx = this.resinGame.ctx;
+    ctx.fillStyle = 'rgba(122, 155, 118, 0.9)';
+    ctx.fillRect(0, 0, this.resinGame.canvas.width, this.resinGame.canvas.height);
+    
+    ctx.fillStyle = 'white';
+    ctx.font = 'bold 32px Quicksand';
+    ctx.textAlign = 'center';
+    ctx.fillText('Game Over!', this.resinGame.canvas.width / 2, this.resinGame.canvas.height / 2 - 40);
+    
+    ctx.font = '20px Nunito';
+    ctx.fillText(`Caught: ${this.resinGame.score} drops`, this.resinGame.canvas.width / 2, this.resinGame.canvas.height / 2);
+    ctx.fillText(`Missed: ${this.resinGame.missed}`, this.resinGame.canvas.width / 2, this.resinGame.canvas.height / 2 + 30);
     
     this.startCooldown('resin');
   }
@@ -1257,9 +1476,12 @@ class MushroomVillageClient {
 
   // VILLAGE MAP
   initVillageMap() {
+    const canvas = document.getElementById('village-map-canvas');
+    if (!canvas) return;
+    
     this.villageMap = {
-      canvas: document.getElementById('village-map-canvas'),
-      ctx: null,
+      canvas: canvas,
+      ctx: canvas.getContext('2d'),
       locations: [
         {name: "Elder's Grove", x: 300, y: 200, type: 'elder', icon: '🍄'},
         {name: 'Moss Garden', x: 100, y: 100, type: 'resource', icon: '🌿'},
@@ -1269,84 +1491,177 @@ class MushroomVillageClient {
         {name: 'Trading Post', x: 500, y: 250, type: 'trade', icon: '🤝'},
         {name: 'Memory Stones', x: 50, y: 200, type: 'stones', icon: '🪨'}
       ],
-      players: []
+      players: [],
+      pathCache: null  // Cache the random path curves
     };
     
     const rect = this.villageMap.canvas.getBoundingClientRect();
-    this.villageMap.canvas.width = rect.width;
-    this.villageMap.canvas.height = rect.height;
-    this.villageMap.ctx = this.villageMap.canvas.getContext('2d');
-    
-    this.renderVillageMap();
+    if (rect.width > 0 && rect.height > 0) {
+      this.villageMap.canvas.width = rect.width;
+      this.villageMap.canvas.height = rect.height;
+      this.renderVillageMap();
+    }
   }
 
   renderVillageMap() {
-    if (!this.villageMap) return;
+    if (!this.villageMap || !this.villageMap.ctx) return;
     
     const ctx = this.villageMap.ctx;
     const w = this.villageMap.canvas.width;
     const h = this.villageMap.canvas.height;
     
-    // Clear
-    ctx.fillStyle = '#FAF8F5';
+    if (w === 0 || h === 0) return;
+    
+    // Draw gradient background with subtle texture
+    const gradient = ctx.createLinearGradient(0, 0, 0, h);
+    gradient.addColorStop(0, '#E8F5E9');
+    gradient.addColorStop(0.5, '#F1F8E9');
+    gradient.addColorStop(1, '#FFF9C4');
+    ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, w, h);
     
-    // Draw paths between locations
-    ctx.strokeStyle = '#D4C4B0';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    
-    const grove = this.villageMap.locations[0];
-    this.villageMap.locations.slice(1).forEach(loc => {
+    // Draw decorative forest elements in background (use seed for consistency)
+    ctx.globalAlpha = 0.1;
+    const seed = 12345; // Fixed seed for consistent rendering
+    for (let i = 0; i < 15; i++) {
+      const x = ((seed + i * 37) % 1000) / 1000 * w;
+      const y = ((seed + i * 73) % 1000) / 1000 * h;
+      const size = 20 + ((seed + i * 17) % 30);
+      ctx.fillStyle = '#4CAF50';
       ctx.beginPath();
-      ctx.moveTo(grove.x, grove.y);
-      ctx.lineTo(loc.x, loc.y);
+      ctx.arc(x, y, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    
+    // Generate or use cached paths
+    if (!this.villageMap.pathCache) {
+      this.villageMap.pathCache = [];
+      const grove = this.villageMap.locations[0];
+      this.villageMap.locations.slice(1).forEach((loc, idx) => {
+        const midX = (grove.x + loc.x) / 2;
+        const midY = (grove.y + loc.y) / 2;
+        const cpX = midX + ((idx % 2 === 0 ? 1 : -1) * 30);
+        const cpY = midY + ((idx % 3 === 0 ? 1 : -1) * 30);
+        this.villageMap.pathCache.push({ from: grove, to: loc, cpX, cpY });
+      });
+    }
+    
+    // Draw curved paths between locations
+    ctx.strokeStyle = '#8D6E63';
+    ctx.lineWidth = 3;
+    ctx.shadowColor = 'rgba(0,0,0,0.2)';
+    ctx.shadowBlur = 4;
+    ctx.shadowOffsetX = 2;
+    ctx.shadowOffsetY = 2;
+    
+    this.villageMap.pathCache.forEach(path => {
+      ctx.beginPath();
+      ctx.moveTo(path.from.x, path.from.y);
+      ctx.quadraticCurveTo(path.cpX, path.cpY, path.to.x, path.to.y);
       ctx.stroke();
+      
+      // Draw path decorations (small stones/grass)
+      for (let i = 0; i < 3; i++) {
+        const t = (i + 1) / 4;
+        const pathX = (1-t)*(1-t)*path.from.x + 2*(1-t)*t*path.cpX + t*t*path.to.x;
+        const pathY = (1-t)*(1-t)*path.from.y + 2*(1-t)*t*path.cpY + t*t*path.to.y;
+        
+        ctx.fillStyle = 'rgba(160, 130, 100, 0.3)';
+        ctx.beginPath();
+        ctx.arc(pathX + (i % 2 === 0 ? 5 : -5), pathY + (i % 2 === 0 ? 5 : -5), 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
     });
     
-    ctx.setLineDash([]);
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
     
-    // Draw locations
+    // Draw locations with enhanced visuals
     this.villageMap.locations.forEach(loc => {
+      // Outer glow
+      const glowGradient = ctx.createRadialGradient(loc.x, loc.y, 20, loc.x, loc.y, 35);
+      glowGradient.addColorStop(0, loc.type === 'elder' ? 'rgba(155, 127, 168, 0.3)' : 'rgba(122, 155, 118, 0.3)');
+      glowGradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = glowGradient;
+      ctx.beginPath();
+      ctx.arc(loc.x, loc.y, 35, 0, Math.PI * 2);
+      ctx.fill();
+      
       // Shadow
-      ctx.fillStyle = 'rgba(0,0,0,0.1)';
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
       ctx.beginPath();
-      ctx.arc(loc.x + 2, loc.y + 2, 20, 0, Math.PI * 2);
+      ctx.arc(loc.x + 3, loc.y + 3, 22, 0, Math.PI * 2);
       ctx.fill();
       
-      // Background
-      ctx.fillStyle = loc.type === 'elder' ? '#9B7FA8' : '#7A9B76';
+      // Main circle with gradient
+      const locGradient = ctx.createRadialGradient(loc.x - 5, loc.y - 5, 5, loc.x, loc.y, 22);
+      locGradient.addColorStop(0, loc.type === 'elder' ? '#B39DDB' : '#A5D6A7');
+      locGradient.addColorStop(1, loc.type === 'elder' ? '#9B7FA8' : '#7A9B76');
+      ctx.fillStyle = locGradient;
       ctx.beginPath();
-      ctx.arc(loc.x, loc.y, 20, 0, Math.PI * 2);
+      ctx.arc(loc.x, loc.y, 22, 0, Math.PI * 2);
       ctx.fill();
       
-      // Icon
-      ctx.font = '20px Arial';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(loc.icon, loc.x, loc.y);
-      
-      // Label
-      ctx.fillStyle = '#3A3A3A';
-      ctx.font = '12px Quicksand';
-      ctx.fillText(loc.name, loc.x, loc.y + 35);
-    });
-    
-    // Draw players
-    this.villageMap.players.forEach(player => {
-      ctx.fillStyle = player.color || '#D4A574';
-      ctx.beginPath();
-      ctx.arc(player.x, player.y, 8, 0, Math.PI * 2);
-      ctx.fill();
-      
-      ctx.strokeStyle = 'white';
+      // Border
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
       ctx.lineWidth = 2;
       ctx.stroke();
       
-      // Player name
+      // Icon with shadow
+      ctx.shadowColor = 'rgba(0,0,0,0.3)';
+      ctx.shadowBlur = 2;
+      ctx.font = '22px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(loc.icon, loc.x, loc.y);
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      
+      // Label with background
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      ctx.fillRect(loc.x - 40, loc.y + 30, 80, 18);
+      ctx.strokeStyle = '#D4C4B0';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(loc.x - 40, loc.y + 30, 80, 18);
+      
       ctx.fillStyle = '#3A3A3A';
-      ctx.font = '10px Nunito';
-      ctx.fillText(player.name, player.x, player.y - 15);
+      ctx.font = 'bold 11px Quicksand';
+      ctx.fillText(loc.name, loc.x, loc.y + 39);
+    });
+    
+    // Draw players with improved style
+    this.villageMap.players.forEach(player => {
+      // Player glow
+      const playerGlow = ctx.createRadialGradient(player.x, player.y, 8, player.x, player.y, 15);
+      playerGlow.addColorStop(0, 'rgba(212, 165, 116, 0.5)');
+      playerGlow.addColorStop(1, 'rgba(212, 165, 116, 0)');
+      ctx.fillStyle = playerGlow;
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, 15, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Player circle
+      ctx.fillStyle = player.color || '#D4A574';
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, 9, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+      
+      // Player name with background
+      const nameWidth = ctx.measureText(player.name).width;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+      ctx.fillRect(player.x - nameWidth/2 - 4, player.y - 25, nameWidth + 8, 14);
+      ctx.strokeStyle = '#D4A574';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(player.x - nameWidth/2 - 4, player.y - 25, nameWidth + 8, 14);
+      
+      ctx.fillStyle = '#3A3A3A';
+      ctx.font = 'bold 10px Nunito';
+      ctx.fillText(player.name, player.x, player.y - 18);
     });
   }
 

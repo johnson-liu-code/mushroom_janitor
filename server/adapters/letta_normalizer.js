@@ -51,6 +51,7 @@ export default function normalizeLettaPatch(raw, tickContext = {}) {
       notes_for_elder: null
     },
     elder_message: null,
+    npc_message: null,
     locations: []
   };
 
@@ -237,6 +238,17 @@ export default function normalizeLettaPatch(raw, tickContext = {}) {
       nudge: String(em.nudge || ''),
       referenced_stones: Array.isArray(em.referenced_stones) ? em.referenced_stones.map(String) : [],
       acknowledged_users: Array.isArray(em.acknowledged_users) ? em.acknowledged_users.map(String) : []
+    };
+  }
+
+  // 7b. NPC_MESSAGE
+  // Letta returns npc_message when NPCs should speak
+  if (parsed.npc_message) {
+    const nm = parsed.npc_message;
+    normalized.npc_message = {
+      npc: String(nm.npc || 'Elder Mycel'),
+      text: String(nm.text || ''),
+      should_npc_speak: Boolean(nm.should_npc_speak)
     };
   }
 

@@ -291,9 +291,60 @@ body {
 /* Side Panels */
 .side-panels {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: #FAFAF8;
+}
+
+/* Tabs Navigation */
+.tabs-nav {
+  display: flex;
+  background: white;
+  border-bottom: 2px solid #E8E8E8;
+  padding: 8px 16px 0;
+  gap: 4px;
+}
+
+.tab-btn {
+  padding: 12px 20px;
+  background: transparent;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: #666;
+  font-family: 'Quicksand', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+  top: 2px;
+}
+
+.tab-btn:hover {
+  color: var(--sage-green);
+  background: #F8F8F6;
+}
+
+.tab-btn.active {
+  color: var(--sage-green);
+  border-bottom-color: var(--sage-green);
+  background: white;
+}
+
+/* Tabs Content */
+.tabs-content {
+  flex: 1;
   overflow-y: auto;
   padding: 16px;
-  background: #FAFAF8;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+  animation: fadeIn 0.3s ease;
 }
 
 .panel {
@@ -380,6 +431,63 @@ body {
 .item-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Donate Controls */
+.donate-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 200px;
+}
+
+.donate-minus,
+.donate-plus {
+  width: 32px;
+  height: 32px;
+  background: var(--sage-green);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  box-shadow: var(--soft-shadow);
+}
+
+.donate-minus:hover,
+.donate-plus:hover {
+  background: var(--forest-dark);
+  transform: scale(1.1);
+}
+
+.donate-minus:active,
+.donate-plus:active {
+  transform: scale(0.95);
+}
+
+.donate-amount {
+  min-width: 36px;
+  text-align: center;
+  font-weight: 700;
+  font-family: 'Quicksand', sans-serif;
+  font-size: 16px;
+  color: var(--sage-green);
+  background: white;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 2px solid #E8E8E8;
+}
+
+.donate-controls .donate-btn {
+  flex: 1;
+  min-width: 80px;
 }
 
 /* Soft Buttons */

@@ -56,8 +56,22 @@
 
       <!-- Side Panels (Right Side) -->
       <div class="side-panels">
-        <!-- Player Inventory Panel -->
-        <div class="panel inventory-panel">
+        <!-- Tab Navigation -->
+        <div class="tabs-nav">
+          <button class="tab-btn active" data-tab="inventory">🎒 Inventory</button>
+          <button class="tab-btn" data-tab="quest">🎯 Quest</button>
+          <button class="tab-btn" data-tab="village">🗺️ Village</button>
+          <button class="tab-btn" data-tab="trade">🤝 Trade</button>
+          <button class="tab-btn" data-tab="messages">📜 Messages</button>
+          <button class="tab-btn" data-tab="info">🪨 Info</button>
+        </div>
+
+        <!-- Tab Content Container -->
+        <div class="tabs-content">
+          <!-- Inventory Tab -->
+          <div class="tab-panel active" id="tab-inventory">
+            <!-- Player Inventory Panel -->
+            <div class="panel inventory-panel">
           <h3>🎒 Your Inventory</h3>
           <div id="inventory-content">
             <div class="inventory-item">
@@ -68,7 +82,12 @@
               </div>
               <div class="item-actions">
                 <button class="pixel-btn gather-btn" onclick="client.startMossGame()">Play Game</button>
-                <button class="pixel-btn donate-btn" onclick="client.quickDonate('moss')">Donate</button>
+                <div class="donate-controls">
+                  <button class="donate-minus" onclick="client.decrementDonateAmount('moss')">-</button>
+                  <span class="donate-amount" id="donate-amount-moss">1</span>
+                  <button class="donate-plus" onclick="client.incrementDonateAmount('moss')">+</button>
+                  <button class="pixel-btn donate-btn" onclick="client.donateWithAmount('moss')">Donate</button>
+                </div>
               </div>
             </div>
             <div class="inventory-item">
@@ -79,7 +98,12 @@
               </div>
               <div class="item-actions">
                 <button class="pixel-btn gather-btn" onclick="client.startCedarGame()">Play Game</button>
-                <button class="pixel-btn donate-btn" onclick="client.quickDonate('cedar')">Donate</button>
+                <div class="donate-controls">
+                  <button class="donate-minus" onclick="client.decrementDonateAmount('cedar')">-</button>
+                  <span class="donate-amount" id="donate-amount-cedar">1</span>
+                  <button class="donate-plus" onclick="client.incrementDonateAmount('cedar')">+</button>
+                  <button class="pixel-btn donate-btn" onclick="client.donateWithAmount('cedar')">Donate</button>
+                </div>
               </div>
             </div>
             <div class="inventory-item">
@@ -90,7 +114,12 @@
               </div>
               <div class="item-actions">
                 <button class="pixel-btn gather-btn" onclick="client.startResinGame()">Play Game</button>
-                <button class="pixel-btn donate-btn" onclick="client.quickDonate('resin')">Donate</button>
+                <div class="donate-controls">
+                  <button class="donate-minus" onclick="client.decrementDonateAmount('resin')">-</button>
+                  <span class="donate-amount" id="donate-amount-resin">1</span>
+                  <button class="donate-plus" onclick="client.incrementDonateAmount('resin')">+</button>
+                  <button class="pixel-btn donate-btn" onclick="client.donateWithAmount('resin')">Donate</button>
+                </div>
               </div>
             </div>
             <div class="inventory-item">
@@ -101,13 +130,18 @@
               </div>
               <div class="item-actions">
                 <button class="pixel-btn gather-btn" onclick="client.startSporeGame()">Play Game</button>
-                <button class="pixel-btn donate-btn" onclick="client.quickDonate('spores')">Donate</button>
+                <div class="donate-controls">
+                  <button class="donate-minus" onclick="client.decrementDonateAmount('spores')">-</button>
+                  <span class="donate-amount" id="donate-amount-spores">1</span>
+                  <button class="donate-plus" onclick="client.incrementDonateAmount('spores')">+</button>
+                  <button class="pixel-btn donate-btn" onclick="client.donateWithAmount('spores')">Donate</button>
+                </div>
               </div>
             </div>
+            </div>
           </div>
-        </div>
 
-        <!-- Spore Catcher Minigame Panel -->
+          <!-- Spore Catcher Minigame Panel -->
         <div class="panel spore-game-container" id="spore-game-panel" style="display: none;">
           <h3>🍄 Spore Drift</h3>
           <canvas id="spore-canvas" class="spore-game-canvas" width="300" height="400"></canvas>
@@ -174,54 +208,63 @@
           </div>
           <button class="spore-start-btn" onclick="client.closeResinGame()">Close Game</button>
         </div>
-
-        <!-- Village Map Panel -->
-        <div class="panel village-map-panel">
-          <h3>🗺️ Village Map</h3>
-          <canvas id="village-map-canvas" class="village-map-canvas" width="600" height="400"></canvas>
         </div>
 
-        <!-- Quest Panel -->
-        <div class="panel quest-panel">
-          <h3>🎯 Active Quest</h3>
-          <div id="quest-content">
-            <p class="panel-empty">No active quest</p>
+          <!-- Quest Tab -->
+          <div class="tab-panel" id="tab-quest">
+            <!-- Quest Panel -->
+            <div class="panel quest-panel">
+              <h3>🎯 Active Quest</h3>
+              <div id="quest-content">
+                <p class="panel-empty">No active quest</p>
+              </div>
+            </div>
+
+            <!-- Vote Panel -->
+            <div class="panel vote-panel">
+              <h3>🗳️ Active Vote</h3>
+              <div id="vote-content">
+                <p class="panel-empty">No active vote</p>
+              </div>
+            </div>
+
+            <!-- Stockpile Panel -->
+            <div class="panel stockpile-panel">
+              <h3>📦 Village Stockpile</h3>
+              <div id="stockpile-content">
+                <div class="resource-item">
+                  <span class="resource-name">Moss:</span>
+                  <span class="resource-qty" id="stock-moss">0</span>
+                </div>
+                <div class="resource-item">
+                  <span class="resource-name">Cedar:</span>
+                  <span class="resource-qty" id="stock-cedar">0</span>
+                </div>
+                <div class="resource-item">
+                  <span class="resource-name">Resin:</span>
+                  <span class="resource-qty" id="stock-resin">0</span>
+                </div>
+                <div class="resource-item">
+                  <span class="resource-name">Spores:</span>
+                  <span class="resource-qty" id="stock-spores">0</span>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
 
-        <!-- Vote Panel -->
-        <div class="panel vote-panel">
-          <h3>🗳️ Active Vote</h3>
-          <div id="vote-content">
-            <p class="panel-empty">No active vote</p>
-          </div>
-        </div>
-
-        <!-- Stockpile Panel -->
-        <div class="panel stockpile-panel">
-          <h3>📦 Village Stockpile</h3>
-          <div id="stockpile-content">
-            <div class="resource-item">
-              <span class="resource-name">Moss:</span>
-              <span class="resource-qty" id="stock-moss">0</span>
-            </div>
-            <div class="resource-item">
-              <span class="resource-name">Cedar:</span>
-              <span class="resource-qty" id="stock-cedar">0</span>
-            </div>
-            <div class="resource-item">
-              <span class="resource-name">Resin:</span>
-              <span class="resource-qty" id="stock-resin">0</span>
-            </div>
-            <div class="resource-item">
-              <span class="resource-name">Spores:</span>
-              <span class="resource-qty" id="stock-spores">0</span>
+          <!-- Village Tab -->
+          <div class="tab-panel" id="tab-village">
+            <!-- Village Map Panel -->
+            <div class="panel village-map-panel">
+              <h3>🗺️ Village Map</h3>
+              <canvas id="village-map-canvas" class="village-map-canvas" width="600" height="400"></canvas>
             </div>
           </div>
-        </div>
 
-        <!-- Trades Panel -->
-        <div class="panel trades-panel">
+          <!-- Trade Tab -->
+          <div class="tab-panel" id="tab-trade">
+            <!-- Trades Panel -->
+            <div class="panel trades-panel">
           <h3>🤝 Trading Board</h3>
           
           <!-- Trade Creator -->
@@ -251,22 +294,30 @@
           
           <div id="trades-content">
             <p class="panel-empty">No open trades</p>
+            </div>
           </div>
-        </div>
-
-        <!-- Memory Stones Panel -->
-        <div class="panel stones-panel">
-          <h3>🪨 Memory Stones</h3>
-          <div id="stones-content">
-            <p class="panel-empty">Loading...</p>
           </div>
-        </div>
 
-        <!-- Private Messages Panel -->
-        <div class="panel dm-panel">
-          <h3>📜 Elder's Messages <span id="dm-badge" class="dm-badge" style="display: none;">0</span></h3>
-          <div id="dm-content">
-            <p class="panel-empty">No private messages</p>
+          <!-- Messages Tab -->
+          <div class="tab-panel" id="tab-messages">
+            <!-- Private Messages Panel -->
+            <div class="panel dm-panel">
+              <h3>📜 Elder's Messages <span id="dm-badge" class="dm-badge" style="display: none;">0</span></h3>
+              <div id="dm-content">
+                <p class="panel-empty">No private messages</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Info Tab -->
+          <div class="tab-panel" id="tab-info">
+            <!-- Memory Stones Panel -->
+            <div class="panel stones-panel">
+              <h3>🪨 Memory Stones</h3>
+              <div id="stones-content">
+                <p class="panel-empty">Loading...</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
